@@ -1,0 +1,60 @@
+node_modules
+/Check_it_registry_front/
+# Node
+node_modules/
+npm-debug.log*
+pnpm-lock.yaml
+
+yarn.lock
+
+# Vite build output
+dist/
+.vite/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env files
+*.env*
+server/.env
+
+# Server
+server/node_modules/
+server/uploads/
+server/coverage/
+server/jest-results/
+
+# IDE
+.vscode/
+test/
+
+ARCHITECTURE_AND_FLOW.md
+BACKEND_STATUS.md
+COMPLETE_PROJECT_DOCUMENTATION.md
+DEPLOYMENT.md
+ENHANCED_AUTH_SUMMARY.md
+ERROR_HANDLING_IMPROVEMENTS.md
+FINAL_IMPLEMENTATION_STATUS.md
+FINAL_STATUS.md
+IMPLEMENTATION_CHECKLIST.md
+PRODUCTION_READINESS_CHECK.md
+IMPLEMENTATION_STATUS.md
+PROFILE_BACKEND_SUMMARY.md
+PROJECT_SUMMARY.md
+ROLE_BASED_ACCESS_GUIDE.md
+ROLE_TESTING_GUIDE.md
+QUICKSTART.md
+START_PROJECT.md
+
+
+
+PROJECT_FEATURE_AUDIT.md
