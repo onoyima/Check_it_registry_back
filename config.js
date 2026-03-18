@@ -34,7 +34,7 @@ class Database {
       throw new Error('Database connection not available. Please check your MySQL server and credentials.');
     }
     try {
-      const [rows] = await pool.execute(sql, params);
+      const [rows] = await pool.query(sql, params);
       return rows;
     } catch (error) {
       console.error('Database query error:', error);
