@@ -25,7 +25,7 @@ app.use(helmet());
 // CORS: allow local dev ports and custom headers for device check context
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 app.use(cors({
-  origin: isDev ? true : (process.env.FRONTEND_URL || 'http://localhost:5173'),
+  origin: isDev ? true : (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, ''),
   credentials: true,
   allowedHeaders: [
     'Content-Type',
