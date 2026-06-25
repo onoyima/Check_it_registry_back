@@ -9,6 +9,7 @@ const Database = require('./config');
 // Import services
 const BackgroundJobs = require('./services/BackgroundJobs');
 const SystemMonitor = require('./services/SystemMonitorService');
+const { runMigrations } = require('./services/migrations');
 
 // Import routes
 const { router: authRoutes } = require('./routes/auth');
@@ -82,22 +83,26 @@ app.use('/api/device-transfer', require('./routes/device-transfer'));
 app.use('/api/recovery-services', require('./routes/recovery-services'));
 app.use('/api/marketplace', require('./routes/marketplace'));
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api/payments', require('./routes/payouts'));
+app.use('/api/orders', require('./routes/orders'));
+app.use('/api/escrow', require('./routes/escrow'));
 
-// Optional routes (can be enabled as needed)
+// Additional routes
 app.use('/api/lea-portal', require('./routes/lea-portal'));
 app.use('/api/audit-trail', require('./routes/audit-trail'));
-// app.use('/api/found-device', require('./routes/found-device'));
-// app.use('/api/test-email', require('./routes/test-email'));
-// app.use('/api/analytics', require('./routes/analytics'));
-// app.use('/api/system-health', require('./routes/system-health'));
+app.use('/api/found-device', require('./routes/found-device'));
+app.use('/api/analytics', require('./routes/analytics'));
+app.use('/api/system-health', require('./routes/system-health'));
+app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/user-management', require('./routes/user-management'));
-// app.use('/api/dashboard-config', require('./routes/dashboard-config'));
-// app.use('/api/info', require('./routes/api-info'));
 app.use('/api/admin-system', require('./routes/admin-system'));
 app.use('/api/user-portal', require('./routes/user-portal'));
 app.use('/api/landing-content', require('./routes/landing-content'));
-// app.use('/api/settings', require('./routes/settings-management'));
-// app.use('/api/audit', require('./routes/audit-trail'));
+app.use('/api/settings', require('./routes/settings-management'));
+app.use('/api/dashboard-config', require('./routes/dashboard-config'));
+app.use('/api/info', require('./routes/api-info'));
+app.use('/api/search', require('./routes/search'));
+app.use('/api/advanced-search', require('./routes/advanced-search'));
 
 // API Documentation
 const swaggerUi = require('swagger-ui-express');
@@ -190,19 +195,30 @@ process.on('SIGINT', async () => {
 });
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`Check It API Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
-  
-  // Start background jobs in development (for testing)
-  if (process.env.NODE_ENV === 'development') {
-    console.log('🚀 Starting background jobs for development...');
-    BackgroundJobs.start();
-    
-    console.log('🔍 Starting system monitoring...');
-    SystemMonitor.start();
+async function startServer() {
+  // Auto-run pending migrations before accepting connections
+  try {
+    await runMigrations();
+  } catch (err) {
+    console.error('Migration error (server will still start):', err.message);
   }
-});
+
+  app.listen(PORT, () => {
+    console.log(`Check It API Server running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
+    
+    // Start background jobs in development (for testing)
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Starting background jobs for development...');
+      BackgroundJobs.start();
+      
+      console.log('Starting system monitoring...');
+      SystemMonitor.start();
+    }
+  });
+}
+
+startServer();
 
 module.exports = app;

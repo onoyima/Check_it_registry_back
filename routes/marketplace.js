@@ -15,10 +15,31 @@ router.post('/', authenticateToken, async (req, res) => {
   }
 });
 
+// Debug: direct SQL count
+router.get('/debug-listing-count', async (req, res) => {
+  try {
+    const allActive = await Database.query("SELECT COUNT(*) as cnt FROM marketplace_listings WHERE status = 'active'");
+    const joined = await Database.query(`SELECT l.*, d.brand, d.model, d.category, u.name as seller_name, u.kyc_status as seller_verified FROM marketplace_listings l JOIN devices d ON l.device_id = d.id JOIN users u ON l.seller_id = u.id WHERE 1=1 AND l.status = 'active' ORDER BY l.created_at DESC LIMIT 20 OFFSET 0`);
+    const countOnly = await Database.query(`SELECT COUNT(*) as cnt FROM marketplace_listings l JOIN devices d ON l.device_id = d.id JOIN users u ON l.seller_id = u.id WHERE l.status = 'active'`);
+    res.json({
+      rawCount: allActive[0]?.cnt || 0,
+      joinedCount: countOnly[0]?.cnt || 0,
+      returnedCount: joined.length,
+      sampleTitle: joined[0]?.title || 'none',
+      dbName: process.env.DB_NAME
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
 // Get all listings (public)
 router.get('/', async (req, res) => {
-  try {
-    const listings = await MarketplaceService.getListings(req.query);
+    console.log('GET /marketplace - query:', JSON.stringify(req.query));
+    console.log('GET /marketplace - url:', req.originalUrl);
+    try {
+      const listings = await MarketplaceService.getListings(req.query);
+      console.log('GET /marketplace - result count:', listings.length);
     res.json(listings);
   } catch (error) {
     console.error('Get listings error:', error);
@@ -82,13 +103,61 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Purchase a listing
+// Bulk initiate purchase (cart checkout - Step 1)
+router.post('/bulk-initiate-purchase', authenticateToken, async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!items || !items.length) return res.status(400).json({ error: 'No items provided' });
+    const result = await MarketplaceService.bulkInitiatePurchase(req.user.id, items);
+    res.json(result);
+  } catch (error) {
+    console.error('Bulk initiate purchase error:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Bulk complete purchase (cart checkout - Step 2)
+router.post('/bulk-complete-purchase', authenticateToken, async (req, res) => {
+  try {
+    const { reference } = req.body;
+    if (!reference) return res.status(400).json({ error: 'Payment reference is required' });
+    const result = await MarketplaceService.bulkCompletePurchase(reference);
+    res.json(result);
+  } catch (error) {
+    console.error('Bulk complete purchase error:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Initiate purchase (Step 1): create pending tx + get Paystack auth URL
+router.post('/:id/initiate-purchase', authenticateToken, async (req, res) => {
+  try {
+    const result = await MarketplaceService.initiatePurchase(req.user.id, req.params.id);
+    res.json(result);
+  } catch (error) {
+    console.error('Initiate purchase error:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Complete purchase (Step 2): verify Paystack payment + hold escrow
+router.post('/complete-purchase', authenticateToken, async (req, res) => {
+  try {
+    const { reference } = req.body;
+    if (!reference) return res.status(400).json({ error: 'Payment reference is required' });
+    const result = await MarketplaceService.completePurchase(reference);
+    res.json(result);
+  } catch (error) {
+    console.error('Complete purchase error:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Purchase a listing (legacy — simulated payment, no Paystack required)
 router.post('/:id/purchase', authenticateToken, async (req, res) => {
   try {
     const { paymentMethodId } = req.body;
-    if (!paymentMethodId) return res.status(400).json({ error: 'Payment method is required' });
-    
-    const result = await MarketplaceService.purchaseListing(req.user.id, req.params.id, paymentMethodId);
+    const result = await MarketplaceService.purchaseListing(req.user.id, req.params.id, paymentMethodId || 'manual');
     res.json(result);
   } catch (error) {
     console.error('Purchase listing error:', error);
@@ -156,3 +225,4 @@ router.put('/admin/:id/featured', authenticateToken, requireAdmin, async (req, r
 });
 
 module.exports = router;
+

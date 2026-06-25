@@ -2,6 +2,7 @@
 const Database = require('../config');
 const OTPService = require('./OTPService');
 const NotificationService = require('./NotificationService');
+const EmailTemplate = require('./EmailTemplate');
 
 class OwnershipTransferService {
   constructor() {
@@ -156,7 +157,7 @@ class OwnershipTransferService {
       await NotificationService.sendEmailDirect(
         transfer.seller_email,
         'Device Transfer Verification - Check It Registry',
-        this.generateTransferOTPEmail(transfer, otpCode)
+        EmailTemplate.wrapContent('Transfer Initiated', this.generateTransferOTPEmail(transfer, otpCode))
       );
 
       return { success: true };
@@ -280,7 +281,7 @@ class OwnershipTransferService {
         await NotificationService.sendEmailDirect(
           transfer.seller_email,
           'Device Transfer Activated - Check It Registry',
-          this.generateTransferActivationEmail(transfer)
+          EmailTemplate.wrapContent('Transfer Verified', this.generateTransferActivationEmail(transfer))
         );
 
         // Send notification to buyer if email provided
@@ -288,7 +289,7 @@ class OwnershipTransferService {
           await NotificationService.sendEmailDirect(
             transfer.buyer_email,
             'Device Available for Transfer - Check It Registry',
-            this.generateBuyerNotificationEmail(transfer)
+            EmailTemplate.wrapContent('Transfer Request', this.generateBuyerNotificationEmail(transfer))
           );
         }
       }
@@ -363,10 +364,10 @@ class OwnershipTransferService {
           await NotificationService.sendEmailDirect(
             buyer.email,
             'Verify Ownership Receipt - Check It Registry',
-            `
+            EmailTemplate.wrapContent('Transfer Completed', `
               <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                 <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-                  <h1>🔐 Verify Receipt</h1>
+                  <h1>ðŸ” Verify Receipt</h1>
                 </div>
                 <div style="padding: 30px; background: #f9f9f9;">
                   <p>Hello ${buyer.name || ''},</p>
@@ -378,7 +379,7 @@ class OwnershipTransferService {
                   <p>Transfer Code: <span style="font-family: monospace; color: #646cff;">${transferCode}</span></p>
                 </div>
               </div>
-            `
+            `)
           );
         } catch (emailErr) {
           console.error('Buyer OTP email send error:', emailErr);
@@ -466,7 +467,7 @@ class OwnershipTransferService {
         await NotificationService.sendEmailDirect(
           seller.email,
           'Device Transfer Completed - Check It Registry',
-          this.generateTransferCompletionEmail(transfer, device, seller, buyer, 'seller')
+          EmailTemplate.wrapContent('Transfer Update', this.generateTransferCompletionEmail(transfer, device, seller, buyer, 'seller'))
         );
       } catch (emailErr) {
         console.error('Transfer completion seller email send error:', emailErr);
@@ -475,7 +476,7 @@ class OwnershipTransferService {
         await NotificationService.sendEmailDirect(
           buyer.email,
           'Device Ownership Transferred - Check It Registry',
-          this.generateTransferCompletionEmail(transfer, device, seller, buyer, 'buyer')
+          EmailTemplate.wrapContent('Transfer Update', this.generateTransferCompletionEmail(transfer, device, seller, buyer, 'buyer'))
         );
       } catch (emailErr) {
         console.error('Transfer completion buyer email send error:', emailErr);
@@ -660,13 +661,13 @@ class OwnershipTransferService {
 
       // Send notifications but do not fail rejection if email sending errors occur
       try {
-        await NotificationService.sendEmailDirect(seller.email, subject, bodySeller);
+        await NotificationService.sendEmailDirect(seller.email, subject, EmailTemplate.wrapContent('Sale Completed', bodySeller));
       } catch (emailErr) {
         console.error('Reject transfer seller email send error:', emailErr);
       }
       if (buyer && buyer.email) {
         try {
-          await NotificationService.sendEmailDirect(buyer.email, subject, bodyBuyer);
+          await NotificationService.sendEmailDirect(buyer.email, subject, EmailTemplate.wrapContent('Sale Completed', bodyBuyer));
         } catch (emailErr) {
           console.error('Reject transfer buyer email send error:', emailErr);
         }
@@ -896,7 +897,7 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-          <h1>🔐 Device Transfer Verification</h1>
+          <h1>ðŸ” Device Transfer Verification</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Verify Your Device Transfer</h2>
@@ -928,7 +929,7 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-          <h1>✅ Transfer Activated</h1>
+          <h1>âœ… Transfer Activated</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Your Device Transfer is Ready</h2>
@@ -960,7 +961,7 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-          <h1>📱 Device Available for Transfer</h1>
+          <h1>ðŸ“± Device Available for Transfer</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Device Ready for Ownership Transfer</h2>
@@ -977,7 +978,7 @@ class OwnershipTransferService {
           <p><strong>To claim ownership:</strong></p>
           <ol>
             <li>Log into your Check It account</li>
-            <li>Go to "Device Transfer" → Claim Transfer</li>
+            <li>Go to "Device Transfer" â†’ Claim Transfer</li>
             <li>Enter the 12-character transfer code shown above</li>
             <li>If prompted, enter the Email OTP we send you</li>
           </ol>
@@ -1031,7 +1032,7 @@ class OwnershipTransferService {
       await NotificationService.sendEmailDirect(
         t.buyer_email,
         'Device Transfer Code (Resent) - Check It Registry',
-        this.generateBuyerNotificationEmail(t)
+        EmailTemplate.wrapContent('Transfer Notification', this.generateBuyerNotificationEmail(t))
       );
 
       await Database.logAudit(
@@ -1059,7 +1060,7 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-          <h1>🎉 Transfer Complete</h1>
+          <h1>ðŸŽ‰ Transfer Complete</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Device Ownership ${isSeller ? 'Transferred' : 'Received'}</h2>

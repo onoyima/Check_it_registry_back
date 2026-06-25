@@ -2,6 +2,7 @@ const nodemailer = require('nodemailer');
 const twilio = require('twilio');
 const webpush = require('web-push');
 const { logActivity } = require('./AuditService');
+const EmailTemplate = require('./EmailTemplate');
 
 class EnhancedNotificationService {
   constructor() {
@@ -149,61 +150,55 @@ class EnhancedNotificationService {
 
       // Email notification
       if (preferences.email_notifications && preferences.verification_notifications) {
-        const subject = `Device Verification ${approved ? 'Approved' : 'Rejected'} - ${deviceName}`;
-        const htmlContent = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background: ${approved ? '#10B981' : '#EF4444'}; color: white; padding: 20px; text-align: center;">
-              <h1>Device Verification ${approved ? 'Approved' : 'Rejected'}</h1>
-            </div>
-            <div style="padding: 20px;">
-              <p>Hello ${user.name},</p>
-              <p>Your device verification request has been <strong>${status}</strong>.</p>
-              
-              <div style="background: #F3F4F6; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                <h3>Device Details:</h3>
-                <p><strong>Brand:</strong> ${device.brand}</p>
-                <p><strong>Model:</strong> ${device.model}</p>
-                <p><strong>IMEI:</strong> ${device.imei || 'N/A'}</p>
-                <p><strong>Status:</strong> ${approved ? 'Verified' : 'Verification Failed'}</p>
-              </div>
+        const subject = `Device Verification ${approved ? 'Approved' : 'Rejected'}`;
+        const statusColor = approved ? '#22C55E' : '#EF4444';
+        const statusBg = approved ? '#F0FDF4' : '#FEF2F2';
+        const statusText = approved ? '#166534' : '#991B1B';
 
-              ${notes ? `
-                <div style="background: #FEF3C7; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                  <h3>Admin Notes:</h3>
-                  <p>${notes}</p>
-                </div>
-              ` : ''}
+        const content = `
+          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Your device verification request has been <strong>${status}</strong>.</p>
 
-              ${approved ? `
-                <p>Your device is now verified and protected in our system. You can now:</p>
-                <ul>
-                  <li>Report it if it gets stolen or lost</li>
-                  <li>Transfer ownership to another user</li>
-                  <li>View its verification status anytime</li>
-                </ul>
-              ` : `
-                <p>Unfortunately, we couldn't verify your device at this time. This could be due to:</p>
-                <ul>
-                  <li>Incomplete or unclear documentation</li>
-                  <li>Device information that couldn't be validated</li>
-                  <li>Missing required verification documents</li>
-                </ul>
-                <p>You can submit a new verification request with updated information.</p>
-              `}
-
-              <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL}/devices" 
-                   style="background: #3B82F6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
-                  View My Devices
-                </a>
-              </div>
-
-              <p>Best regards,<br>The Check It Team</p>
-            </div>
+          <div style="background: ${statusBg}; border-left: 4px solid ${statusColor}; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <h3 style="margin: 0 0 10px; color: ${statusText}; font-size: 15px;">Device Details</h3>
+            <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: ${statusText};">
+              <tr><td style="font-weight: 600; padding-right: 12px;">Brand:</td><td>${device.brand}</td></tr>
+              <tr><td style="font-weight: 600; padding-right: 12px;">Model:</td><td>${device.model}</td></tr>
+              <tr><td style="font-weight: 600; padding-right: 12px;">IMEI:</td><td>${device.imei || 'N/A'}</td></tr>
+              <tr><td style="font-weight: 600; padding-right: 12px;">Status:</td><td>${approved ? 'Verified' : 'Verification Failed'}</td></tr>
+            </table>
           </div>
+
+          ${notes ? `
+            <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 12px 16px; border-radius: 8px; margin: 20px 0;">
+              <h3 style="margin: 0 0 5px; color: #92400E; font-size: 14px;">Admin Notes</h3>
+              <p style="margin: 0; color: #92400E; font-size: 14px;">${notes}</p>
+            </div>
+          ` : ''}
+
+          ${approved ? `
+            <p>Your device is now verified and protected in our system. You can now:</p>
+            <ul style="color: #374151; line-height: 1.8;">
+              <li>Report it if it gets stolen or lost</li>
+              <li>Transfer ownership to another user</li>
+              <li>View its verification status anytime</li>
+            </ul>
+          ` : `
+            <p>Unfortunately, we couldn't verify your device at this time. This could be due to:</p>
+            <ul style="color: #374151; line-height: 1.8;">
+              <li>Incomplete or unclear documentation</li>
+              <li>Device information that couldn't be validated</li>
+              <li>Missing required verification documents</li>
+            </ul>
+            <p>You can submit a new verification request with updated information.</p>
+          `}
         `;
 
-        await this.sendEmail(user.email, subject, htmlContent);
+        const htmlContent = EmailTemplate.wrapContent(subject, content, {
+          actionButton: { url: `${process.env.FRONTEND_URL}/devices`, text: 'View My Devices' }
+        });
+
+        await this.sendEmail(user.email, `${subject} - ${deviceName}`, htmlContent);
       }
 
       // SMS notification
@@ -236,83 +231,60 @@ class EnhancedNotificationService {
       const deviceName = `${device.brand} ${device.model}`;
 
       if (preferences.email_notifications && preferences.device_alerts) {
-        let subject, htmlContent;
+        let subject, title, content, actionButton;
 
         switch (alertType) {
           case 'device_checked':
-            subject = `Device Check Alert - ${deviceName}`;
-            htmlContent = `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <div style="background: #F59E0B; color: white; padding: 20px; text-align: center;">
-                  <h1>🔍 Device Check Alert</h1>
-                </div>
-                <div style="padding: 20px;">
-                  <p>Hello ${user.name},</p>
-                  <p>Someone has checked your device in our system:</p>
-                  
-                  <div style="background: #FEF3C7; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                    <h3>Device: ${deviceName}</h3>
-                    <p><strong>Checked at:</strong> ${new Date().toLocaleString()}</p>
-                    <p><strong>Location:</strong> ${details.location || 'Unknown'}</p>
-                    <p><strong>IP Address:</strong> ${details.ip_address || 'Unknown'}</p>
-                  </div>
-
-                  <p>If this was you, no action is needed. If you didn't perform this check, please review your device security.</p>
-                  
-                  <div style="text-align: center; margin: 30px 0;">
-                    <a href="${process.env.FRONTEND_URL}/devices/${device.id}" 
-                       style="background: #3B82F6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
-                      View Device Details
-                    </a>
-                  </div>
-                </div>
+            subject = 'Device Check Alert';
+            title = 'Device Check Alert';
+            content = `
+              <p>Hello <strong>${user.name}</strong>,</p>
+              <p>Someone has checked your device in our system:</p>
+              <div style="background: #FFFBEB; border-left: 4px solid #F59E0B; padding: 16px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin: 0 0 10px; color: #92400E; font-size: 15px;">Device: ${deviceName}</h3>
+                <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #92400E;">
+                  <tr><td style="font-weight: 600; padding-right: 12px;">Checked at:</td><td>${new Date().toLocaleString()}</td></tr>
+                  <tr><td style="font-weight: 600; padding-right: 12px;">Location:</td><td>${details.location || 'Unknown'}</td></tr>
+                  <tr><td style="font-weight: 600; padding-right: 12px;">IP Address:</td><td>${details.ip_address || 'Unknown'}</td></tr>
+                </table>
               </div>
+              <p>If this was you, no action is needed. If you didn't perform this check, please review your device security.</p>
             `;
+            actionButton = { url: `${process.env.FRONTEND_URL}/devices/${device.id}`, text: 'View Device Details' };
             break;
 
           case 'suspicious_activity':
-            subject = `🚨 Suspicious Activity Alert - ${deviceName}`;
-            htmlContent = `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <div style="background: #EF4444; color: white; padding: 20px; text-align: center;">
-                  <h1>🚨 Suspicious Activity Detected</h1>
-                </div>
-                <div style="padding: 20px;">
-                  <p>Hello ${user.name},</p>
-                  <p><strong>We've detected suspicious activity related to your device:</strong></p>
-                  
-                  <div style="background: #FEE2E2; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #EF4444;">
-                    <h3>Device: ${deviceName}</h3>
-                    <p><strong>Activity:</strong> ${details.activity}</p>
-                    <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
-                    <p><strong>Details:</strong> ${details.description}</p>
-                  </div>
-
-                  <p><strong>Recommended Actions:</strong></p>
-                  <ul>
-                    <li>Check if you still have your device</li>
-                    <li>Review recent device activity</li>
-                    <li>Report the device as stolen if missing</li>
-                    <li>Contact support if you need assistance</li>
-                  </ul>
-                  
-                  <div style="text-align: center; margin: 30px 0;">
-                    <a href="${process.env.FRONTEND_URL}/devices/${device.id}" 
-                       style="background: #EF4444; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin-right: 10px;">
-                      View Device
-                    </a>
-                    <a href="${process.env.FRONTEND_URL}/report-missing" 
-                       style="background: #6B7280; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
-                      Report Missing
-                    </a>
-                  </div>
-                </div>
+            subject = 'Suspicious Activity Alert';
+            title = 'Suspicious Activity Detected';
+            content = `
+              <p>Hello <strong>${user.name}</strong>,</p>
+              <p><strong>We've detected suspicious activity</strong> related to your device.</p>
+              <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 16px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin: 0 0 10px; color: #991B1B; font-size: 15px;">Device: ${deviceName}</h3>
+                <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #991B1B;">
+                  <tr><td style="font-weight: 600; padding-right: 12px;">Activity:</td><td>${details.activity}</td></tr>
+                  <tr><td style="font-weight: 600; padding-right: 12px;">Time:</td><td>${new Date().toLocaleString()}</td></tr>
+                  <tr><td style="font-weight: 600; padding-right: 12px;">Details:</td><td>${details.description}</td></tr>
+                </table>
+              </div>
+              <p><strong>Recommended Actions:</strong></p>
+              <ul style="color: #374151; line-height: 1.8;">
+                <li>Check if you still have your device</li>
+                <li>Review recent device activity</li>
+                <li>Report the device as stolen if missing</li>
+                <li>Contact support if you need assistance</li>
+              </ul>
+              <div style="text-align: center; margin: 20px 0 10px;">
+                <a href="${process.env.FRONTEND_URL}/devices/${device.id}" style="display: inline-block; padding: 12px 24px; background: #EF4444; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px; margin-right: 8px;">View Device</a>
+                <a href="${process.env.FRONTEND_URL}/report-missing" style="display: inline-block; padding: 12px 24px; background: #6B7280; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">Report Missing</a>
               </div>
             `;
+            actionButton = null; // Already inline buttons
             break;
         }
 
-        await this.sendEmail(user.email, subject, htmlContent);
+        const htmlContent = EmailTemplate.wrapContent(title, content, { actionButton });
+        await this.sendEmail(user.email, `${subject} - ${deviceName}`, htmlContent);
       }
 
       // SMS for critical alerts
@@ -345,47 +317,38 @@ class EnhancedNotificationService {
         'dismissed': '#6B7280'
       };
 
-      const subject = `Report Status Update - Case #${report.case_id}`;
-      const htmlContent = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: ${statusColors[newStatus] || '#6B7280'}; color: white; padding: 20px; text-align: center;">
-            <h1>Report Status Updated</h1>
-          </div>
-          <div style="padding: 20px;">
-            <p>Hello ${user.name},</p>
-            <p>Your report status has been updated:</p>
-            
-            <div style="background: #F3F4F6; padding: 15px; border-radius: 8px; margin: 20px 0;">
-              <h3>Case #${report.case_id}</h3>
-              <p><strong>Report Type:</strong> ${report.report_type}</p>
-              <p><strong>Previous Status:</strong> <span style="color: ${statusColors[oldStatus] || '#6B7280'}">${oldStatus.replace('_', ' ')}</span></p>
-              <p><strong>New Status:</strong> <span style="color: ${statusColors[newStatus] || '#6B7280'}">${newStatus.replace('_', ' ')}</span></p>
-              <p><strong>Updated:</strong> ${new Date().toLocaleString()}</p>
-            </div>
+      const subject = `Report Status Updated - Case #${report.case_id}`;
+      const title = `Report Status Updated`;
+      const content = `
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Your report status has been updated:</p>
 
-            ${newStatus === 'resolved' ? `
-              <div style="background: #D1FAE5; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10B981;">
-                <h3>🎉 Great News!</h3>
-                <p>Your report has been resolved. If this involves a device recovery, you should be contacted separately with details.</p>
-              </div>
-            ` : newStatus === 'under_review' ? `
-              <div style="background: #DBEAFE; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #3B82F6;">
-                <h3>👀 Under Review</h3>
-                <p>Our team is actively investigating your report. We'll update you as soon as we have more information.</p>
-              </div>
-            ` : ''}
-            
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${process.env.FRONTEND_URL}/reports" 
-                 style="background: #3B82F6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
-                View My Reports
-              </a>
-            </div>
-
-            <p>Best regards,<br>The Check It Team</p>
-          </div>
+        <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 20px 0;">
+          <h3 style="margin: 0 0 10px; color: #111827; font-size: 15px;">Case #${report.case_id}</h3>
+          <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
+            <tr><td style="font-weight: 600; padding-right: 12px;">Report Type:</td><td>${report.report_type}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">Previous Status:</td><td style="color: ${statusColors[oldStatus] || '#6B7280'}; font-weight: 500;">${oldStatus.replace('_', ' ')}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">New Status:</td><td style="color: ${statusColors[newStatus] || '#6B7280'}; font-weight: 500;">${newStatus.replace('_', ' ')}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">Updated:</td><td>${new Date().toLocaleString()}</td></tr>
+          </table>
         </div>
+
+        ${newStatus === 'resolved' ? `
+          <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <h3 style="margin: 0 0 5px; color: #166534; font-size: 15px;">Great News!</h3>
+            <p style="margin: 0; color: #166534;">Your report has been resolved. If this involves a device recovery, you should be contacted separately with details.</p>
+          </div>
+        ` : newStatus === 'under_review' ? `
+          <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <h3 style="margin: 0 0 5px; color: #1E40AF; font-size: 15px;">Under Review</h3>
+            <p style="margin: 0; color: #1E40AF;">Our team is actively investigating your report. We'll update you as soon as we have more information.</p>
+          </div>
+        ` : ''}
       `;
+
+      const htmlContent = EmailTemplate.wrapContent(title, content, {
+        actionButton: { url: `${process.env.FRONTEND_URL}/reports`, text: 'View My Reports' }
+      });
 
       await this.sendEmail(user.email, subject, htmlContent);
 
@@ -411,87 +374,58 @@ class EnhancedNotificationService {
       if (userRows.length === 0) return;
 
       const user = userRows[0];
-      const subject = `Welcome to Check It - Secure Your Devices Today!`;
+      const subject = `Welcome to Check It!`;
       
-      const htmlContent = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%); color: white; padding: 30px; text-align: center;">
-            <h1>Welcome to Check It! 🛡️</h1>
-            <p style="font-size: 18px; margin: 0;">Your Device Security Journey Starts Here</p>
-          </div>
-          
-          <div style="padding: 30px;">
-            <p style="font-size: 16px;">Hello ${user.name},</p>
-            <p>Welcome to Check It, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
+      const content = `
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Welcome to <strong>Check It</strong>, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
 
-            <div style="background: #F0F9FF; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #3B82F6;">
-              <h3 style="color: #1E40AF; margin-top: 0;">🚀 Get Started in 3 Easy Steps:</h3>
-              <ol style="color: #374151; line-height: 1.6;">
-                <li><strong>Register Your Devices:</strong> Add your phones, laptops, and other valuables to our secure registry</li>
-                <li><strong>Verify Ownership:</strong> Complete the verification process to ensure maximum protection</li>
-                <li><strong>Stay Protected:</strong> Get instant alerts if someone checks your device</li>
-              </ol>
-            </div>
-
-            <div style="background: #F9FAFB; padding: 20px; border-radius: 8px; margin: 25px 0;">
-              <h3 style="color: #374151; margin-top: 0;">✨ What You Can Do:</h3>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                <div>
-                  <p style="margin: 5px 0;"><strong>📱 Device Registry</strong><br>Secure registration system</p>
-                  <p style="margin: 5px 0;"><strong>🔍 Public Checks</strong><br>Verify device legitimacy</p>
-                </div>
-                <div>
-                  <p style="margin: 5px 0;"><strong>🚨 Theft Reports</strong><br>Quick reporting system</p>
-                  <p style="margin: 5px 0;"><strong>🔄 Device Transfers</strong><br>Safe ownership transfers</p>
-                </div>
-              </div>
-            </div>
-
-            ${user.role === 'business' ? `
-              <div style="background: #FEF3C7; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #F59E0B;">
-                <h3 style="color: #92400E; margin-top: 0;">🏢 Business Account Benefits:</h3>
-                <ul style="color: #374151; line-height: 1.6;">
-                  <li>Bulk device registration</li>
-                  <li>Advanced analytics and reporting</li>
-                  <li>Priority support</li>
-                  <li>Custom integration options</li>
-                </ul>
-              </div>
-            ` : ''}
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${process.env.FRONTEND_URL}/register-device" 
-                 style="background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; margin-right: 10px;">
-                Register Your First Device
-              </a>
-              <a href="${process.env.FRONTEND_URL}/dashboard" 
-                 style="background: #6B7280; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold;">
-                Go to Dashboard
-              </a>
-            </div>
-
-            <div style="background: #FEE2E2; padding: 15px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #EF4444;">
-              <p style="margin: 0; color: #991B1B;"><strong>🔒 Security Tip:</strong> Always verify devices before purchasing from unknown sellers. Use our public check feature to ensure you're not buying stolen property.</p>
-            </div>
-
-            <p>If you have any questions, our support team is here to help. Simply reply to this email or visit our help center.</p>
-
-            <p style="margin-top: 30px;">Stay secure,<br><strong>The Check It Team</strong></p>
-          </div>
-
-          <div style="background: #F9FAFB; padding: 20px; text-align: center; border-top: 1px solid #E5E7EB;">
-            <p style="margin: 0; color: #6B7280; font-size: 14px;">
-              Follow us: 
-              <a href="#" style="color: #3B82F6; text-decoration: none;">Twitter</a> | 
-              <a href="#" style="color: #3B82F6; text-decoration: none;">Facebook</a> | 
-              <a href="#" style="color: #3B82F6; text-decoration: none;">LinkedIn</a>
-            </p>
-            <p style="margin: 10px 0 0 0; color: #6B7280; font-size: 12px;">
-              © 2024 Check It Device Registry. All rights reserved.
-            </p>
-          </div>
+        <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 20px; border-radius: 8px; margin: 25px 0;">
+          <h3 style="color: #1E40AF; margin: 0 0 12px; font-size: 16px;">Get Started in 3 Easy Steps</h3>
+          <ol style="color: #374151; line-height: 2; margin: 0; padding-left: 20px;">
+            <li><strong>Register Your Devices:</strong> Add your phones, laptops, and other valuables to our secure registry</li>
+            <li><strong>Verify Ownership:</strong> Complete the verification process to ensure maximum protection</li>
+            <li><strong>Stay Protected:</strong> Get instant alerts if someone checks your device</li>
+          </ol>
         </div>
+
+        <div style="background: #F9FAFB; border-radius: 8px; padding: 20px; margin: 25px 0;">
+          <h3 style="color: #111827; margin: 0 0 12px; font-size: 16px;">What You Can Do</h3>
+          <table cellpadding="6" cellspacing="0" style="font-size: 14px; color: #374151; width: 100%;">
+            <tr>
+              <td style="width: 50%; vertical-align: top;"><strong>Device Registry</strong><br><span style="color: #6B7280;">Secure registration system</span></td>
+              <td style="width: 50%; vertical-align: top;"><strong>Public Checks</strong><br><span style="color: #6B7280;">Verify device legitimacy</span></td>
+            </tr>
+            <tr>
+              <td style="width: 50%; vertical-align: top;"><strong>Theft Reports</strong><br><span style="color: #6B7280;">Quick reporting system</span></td>
+              <td style="width: 50%; vertical-align: top;"><strong>Device Transfers</strong><br><span style="color: #6B7280;">Safe ownership transfers</span></td>
+            </tr>
+          </table>
+        </div>
+
+        ${user.role === 'business' ? `
+          <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 16px; border-radius: 8px; margin: 25px 0;">
+            <h3 style="color: #92400E; margin: 0 0 8px; font-size: 16px;">Business Account Benefits</h3>
+            <ul style="color: #374151; line-height: 1.8; margin: 0;">
+              <li>Bulk device registration</li>
+              <li>Advanced analytics and reporting</li>
+              <li>Priority support</li>
+              <li>Custom integration options</li>
+            </ul>
+          </div>
+        ` : ''}
+
+        <div style="background: #FEF2F2; border-left: 4px solid #EF4444; padding: 16px; border-radius: 8px; margin: 25px 0;">
+          <p style="margin: 0; color: #991B1B; font-size: 14px;"><strong>Security Tip:</strong> Always verify devices before purchasing from unknown sellers. Use our public check feature to ensure you're not buying stolen property.</p>
+        </div>
+
+        <p>If you have any questions, our support team is here to help. Simply reply to this email or visit our help center.</p>
+        <p style="margin-top: 20px;">Stay secure,<br><strong>The Check It Team</strong></p>
       `;
+
+      const htmlContent = EmailTemplate.wrapContent(subject, content, {
+        actionButton: { url: `${process.env.FRONTEND_URL}/register-device`, text: 'Register Your First Device' }
+      });
 
       await this.sendEmail(user.email, subject, htmlContent);
 

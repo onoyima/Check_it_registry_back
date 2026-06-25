@@ -2,6 +2,7 @@ const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const Database = require('../config');
 const NotificationService = require('./NotificationService');
+const EmailTemplate = require('./EmailTemplate');
 
 class EmailVerificationService {
   constructor() {
@@ -129,44 +130,36 @@ class EmailVerificationService {
   async sendVerificationEmail(user, token) {
     const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
     
-    const emailTemplate = `
-      <div style="max-width: 600px; margin: 0 auto; font-family: Arial, sans-serif;">
-        <h2 style="color: #646cff;">Welcome to Check It Device Registry!</h2>
-        <p>Hello ${user.name},</p>
-        <p>Thank you for registering with Check It. To complete your registration and start protecting your devices, please verify your email address.</p>
-        
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${verificationUrl}" 
-             style="background-color: #646cff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block;">
-            Verify Email Address
-          </a>
-        </div>
-        
-        <p>Or copy and paste this link into your browser:</p>
-        <p style="word-break: break-all; color: #666;">${verificationUrl}</p>
-        
-        <p>This verification link will expire in 24 hours.</p>
-        
-        <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
-        
-        <h3>What's Next?</h3>
-        <ul>
+    const content = `
+      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Thank you for registering with <strong>Check It</strong>. To complete your registration and start protecting your devices, please verify your email address.</p>
+      
+      <p style="color: #6B7280;">Or copy and paste this link into your browser:</p>
+      <p style="word-break: break-all; color: #2563EB; font-size: 13px; background: #F3F4F6; padding: 10px; border-radius: 6px;">${verificationUrl}</p>
+      
+      <p style="color: #6B7280;">This verification link will expire in <strong>24 hours</strong>.</p>
+      
+      <div style="background: #F9FAFB; border-radius: 8px; padding: 20px; margin: 25px 0;">
+        <h3 style="margin: 0 0 12px; color: #111827; font-size: 16px;">What's Next?</h3>
+        <ul style="margin: 0; color: #374151; line-height: 1.8;">
           <li>Register your devices with proof of ownership</li>
           <li>Get admin verification for full protection</li>
           <li>Use our public check to verify devices before purchase</li>
           <li>Report stolen or lost devices instantly</li>
         </ul>
-        
-        <p>If you didn't create an account with Check It, please ignore this email.</p>
-        
-        <p>Best regards,<br>The Check It Team</p>
       </div>
+      
+      <p style="color: #9CA3AF; font-size: 13px;">If you didn't create an account with Check It, please ignore this email.</p>
     `;
 
-    await NotificationService.sendEmail(
+    const fullHtml = EmailTemplate.wrapContent('Welcome to Check It!', content, {
+      actionButton: { url: verificationUrl, text: 'Verify Email Address' }
+    });
+
+    await NotificationService.sendEmailDirect(
       user.email,
-      'Verify Your Email - Check It Device Registry',
-      emailTemplate
+      'Verify Your Email - Check It',
+      fullHtml
     );
   }
 

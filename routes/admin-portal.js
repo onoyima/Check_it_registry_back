@@ -423,29 +423,22 @@ router.post('/resend-device-verification/:id', async (req, res) => {
 
     // Send email
     const NotificationService = require('../services/NotificationService');
+    const EmailTemplate = require('../services/EmailTemplate');
+    const content = `
+      <p>Hello <strong>${owner.name}</strong>,</p>
+      <p>This is a friendly reminder to verify ownership of your device:</p>
+      <div style="background: #EEF2FF; border-left: 4px solid #2563EB; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+        <p style="margin: 0; color: #1E40AF; font-weight: 600;">${device.brand} ${device.model}</p>
+      </div>
+      <p style="color: #6B7280; font-size: 13px;">If the device is already verified, you can ignore this message; the link will simply confirm the status.</p>
+    `;
+    const fullHtml = EmailTemplate.wrapContent('Verify Your Device', content, {
+      actionButton: { url: verifyLink, text: 'Verify Ownership' }
+    });
     await NotificationService.sendEmailDirect(
       owner.email,
-      'Reminder: Verify Your Device Ownership - Check It Registry',
-      `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-            <h1>Verify Your Device</h1>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <p>Hello ${owner.name},</p>
-            <p>This is a friendly reminder to verify ownership of your device: <strong>${device.brand} ${device.model}</strong>.</p>
-            <p>
-              <a href="${verifyLink}" style="display:inline-block;background:#646cff;color:white;padding:12px 18px;border-radius:6px;text-decoration:none;">Verify Ownership</a>
-            </p>
-            <p>If the button doesn’t work, copy and paste this link into your browser:</p>
-            <p><a href="${verifyLink}">${verifyLink}</a></p>
-            <p>If the device is already verified, you can ignore this message; the link will simply confirm the status.</p>
-          </div>
-          <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-            <p>This is an automated message from Check It Device Registry</p>
-          </div>
-        </div>
-      `
+      'Reminder: Verify Your Device Ownership - Check It',
+      fullHtml
     );
 
     // Log audit

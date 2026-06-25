@@ -58,35 +58,80 @@ class AuditService {
   async logActivity(req, userId, action, tableName, recordId, oldValues = null, newValues = null, additionalData = {}) {
     try {
       const connection = await this.pool.getConnection();
-      
+
       try {
+        // Handle both calling conventions:
+        //   new: logActivity(req, userId, ...) where req is an Express request
+        //   old: logActivity(userId, ...) where first arg is actually the userId string
+        let actualReq = req;
+        let actualUserId = userId;
+        let actualAction = action;
+        let actualTableName = tableName;
+        let actualRecordId = recordId;
+        let actualOldValues = oldValues;
+        let actualNewValues = newValues;
+        let actualAdditionalData = additionalData;
+
+        if (typeof req === 'string') {
+          // Old calling convention: first arg is userId
+          actualReq = null;
+          actualUserId = req;
+          actualAction = userId;
+          actualTableName = action;
+          actualRecordId = tableName;
+          actualOldValues = recordId;
+          actualNewValues = oldValues;
+          actualAdditionalData = newValues || {};
+        }
+
+        // Look up user name
+        let userName = null;
+        if (actualReq && actualReq.user && actualReq.user.name) {
+          userName = actualReq.user.name;
+        }
+        if (!userName && actualUserId) {
+          try {
+            const [userRows] = await connection.execute('SELECT name FROM users WHERE id = ?', [actualUserId]);
+            if (userRows.length > 0) {
+              userName = userRows[0].name;
+            }
+          } catch { }
+        }
+
+        const ip = actualReq ? this.getClientIP(actualReq) : null;
+        const mac = actualReq ? this.extractMacAddress(actualReq) : null;
+        const ua = actualReq ? (actualReq.headers['user-agent'] || null) : null;
+        const method = actualReq ? actualReq.method : null;
+        const url = actualReq ? (actualReq.originalUrl || actualReq.url) : null;
+
         const auditData = {
           id: Database.generateUUID(),
-          user_id: userId,
-          action: action,
-          table_name: tableName,
-          record_id: recordId,
-          old_values: oldValues ? JSON.stringify(oldValues) : null,
-          new_values: newValues ? JSON.stringify(newValues) : null,
-          ip_address: this.getClientIP(req),
-          mac_address: this.extractMacAddress(req),
-          user_agent: req.headers['user-agent'] || null,
-          session_id: req.session?.id || req.headers['x-session-id'] || null,
-          request_method: req.method,
-          request_url: req.originalUrl || req.url,
-          response_status: additionalData.responseStatus || null,
-          execution_time_ms: additionalData.executionTime || null,
+          user_id: actualUserId,
+          user_name: userName,
+          action: actualAction,
+          table_name: actualTableName,
+          record_id: actualRecordId,
+          old_values: actualOldValues ? JSON.stringify(actualOldValues) : null,
+          new_values: actualNewValues ? JSON.stringify(actualNewValues) : null,
+          ip_address: ip,
+          mac_address: mac,
+          user_agent: ua,
+          session_id: actualReq?.session?.id || actualReq?.headers?.['x-session-id'] || null,
+          request_method: method,
+          request_url: url,
+          response_status: actualAdditionalData.responseStatus || null,
+          execution_time_ms: actualAdditionalData.executionTime || null,
           created_at: new Date()
         };
 
         await connection.execute(
           `INSERT INTO audit_logs (
-            id, user_id, action, table_name, record_id, old_values, new_values,
+            id, user_id, user_name, action, table_name, record_id, old_values, new_values,
             ip_address, mac_address, user_agent, session_id, request_method,
             request_url, response_status, execution_time_ms, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            auditData.id, auditData.user_id, auditData.action, auditData.table_name,
+            auditData.id, auditData.user_id, auditData.user_name, auditData.action, auditData.table_name,
             auditData.record_id, auditData.old_values, auditData.new_values,
             auditData.ip_address, auditData.mac_address, auditData.user_agent,
             auditData.session_id, auditData.request_method, auditData.request_url,
@@ -94,8 +139,8 @@ class AuditService {
           ]
         );
 
-        console.log(`Audit logged: ${action} by user ${userId} from ${auditData.ip_address} (MAC: ${auditData.mac_address || 'unknown'})`);
-        
+        console.log(`Audit logged: ${actualAction} by ${userName || actualUserId} from ${ip || 'unknown'} (MAC: ${mac || 'unknown'})`);
+
       } finally {
         connection.release();
       }

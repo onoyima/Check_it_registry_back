@@ -1,6 +1,7 @@
 // Device Security Service for tracking and managing trusted devices
 const crypto = require('crypto');
 const Database = require('../config');
+const EmailTemplate = require('./EmailTemplate');
 const OTPService = require('./OTPService');
 
 class DeviceSecurityService {
@@ -257,34 +258,38 @@ class DeviceSecurityService {
       const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
       if (!user) return;
 
-      const subject = isNewDevice ? 
-        'New Device Login - Check It Registry' : 
-        'Device Login - Check It Registry';
+      const subject = isNewDevice ?
+        'New Device Login Detected' :
+        'Device Login Alert';
 
-      const template = `
-        <h2>${isNewDevice ? 'New Device Login Detected' : 'Device Login'}</h2>
-        <p>Hello ${user.name},</p>
-        <p>A ${isNewDevice ? 'new' : ''} login was detected on your account:</p>
-        <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 15px 0;">
-          <p><strong>Device:</strong> ${deviceInfo.device}</p>
-          <p><strong>Browser:</strong> ${deviceInfo.browser}</p>
-          <p><strong>Operating System:</strong> ${deviceInfo.os}</p>
-          <p><strong>IP Address:</strong> ${ipAddress}</p>
-          <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+      const content = `
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>A ${isNewDevice ? 'new ' : ''}login was detected on your account.</p>
+        <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
+          <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
+            <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${deviceInfo.device}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">Browser:</td><td>${deviceInfo.browser}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">OS:</td><td>${deviceInfo.os}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">IP Address:</td><td>${ipAddress}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">Time:</td><td>${new Date().toLocaleString()}</td></tr>
+          </table>
         </div>
         ${isNewDevice ? `
-          <p style="color: #ff6b35;"><strong>If this wasn't you, please:</strong></p>
-          <ul>
-            <li>Change your password immediately</li>
-            <li>Review your trusted devices</li>
-            <li>Contact support if needed</li>
-          </ul>
+          <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #991B1B; font-size: 14px;"><strong>If this wasn't you:</strong></p>
+            <ul style="margin: 8px 0 0; color: #991B1B; font-size: 14px;">
+              <li>Change your password immediately</li>
+              <li>Review your trusted devices</li>
+              <li>Contact support if needed</li>
+            </ul>
+          </div>
         ` : ''}
         <p>Stay secure!</p>
       `;
 
+      const fullHtml = EmailTemplate.wrapContent(subject, content);
       const NotificationService = require('./NotificationService');
-      await NotificationService.sendEmail(user.email, subject, template);
+      await NotificationService.sendEmailDirect(user.email, `${subject} - Check It`, fullHtml);
     } catch (error) {
       console.error('Error sending device login notification:', error);
     }

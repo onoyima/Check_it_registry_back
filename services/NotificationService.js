@@ -1,6 +1,7 @@
 // Notification Service - Email, SMS, and Push Notifications
 const nodemailer = require("nodemailer");
 const Database = require("../config");
+const EmailTemplate = require("./EmailTemplate");
 
 class NotificationService {
   constructor() {
@@ -220,52 +221,17 @@ class NotificationService {
   generateEmailHTML(message, payload) {
     const data = payload ? JSON.parse(payload) : {};
 
-    return `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Check It - Device Registry</title>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #646cff; color: white; padding: 20px; text-align: center; }
-          .content { padding: 20px; background: #f9f9f9; }
-          .footer { padding: 20px; text-align: center; color: #666; font-size: 12px; }
-          .button { display: inline-block; padding: 10px 20px; background: #646cff; color: white; text-decoration: none; border-radius: 5px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Check It - Device Registry</h1>
-          </div>
-          <div class="content">
-            ${message}
-            ${
-              data.caseId
-                ? `<p><strong>Case ID:</strong> ${data.caseId}</p>`
-                : ""
-            }
-            ${
-              data.deviceInfo
-                ? `<p><strong>Device:</strong> ${data.deviceInfo}</p>`
-                : ""
-            }
-            ${
-              data.actionUrl
-                ? `<p><a href="${data.actionUrl}" class="button">Take Action</a></p>`
-                : ""
-            }
-          </div>
-          <div class="footer">
-            <p>This is an automated message from Check It Device Registry.</p>
-            <p>If you have questions, please contact support.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
+    let extraContent = '';
+    if (data.caseId) {
+      extraContent += `<p><strong>Case ID:</strong> ${data.caseId}</p>`;
+    }
+    if (data.deviceInfo) {
+      extraContent += `<p><strong>Device:</strong> ${data.deviceInfo}</p>`;
+    }
+
+    const content = `${message}${extraContent}`;
+    const actionButton = data.actionUrl ? { url: data.actionUrl, text: 'Take Action' } : null;
+    return EmailTemplate.wrapContent('Check It Notification', content, { actionButton });
   }
 
   // Notification templates
@@ -279,23 +245,26 @@ class NotificationService {
     if (!user) return;
 
     const subject = "Device Verification Approved";
+    const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <h2>Great news!</h2>
-      <p>Your device <strong>${deviceInfo.brand} ${
-      deviceInfo.model
-    }</strong> has been verified and approved.</p>
+      <p>Hello <strong>${user.name}</strong>,</p>
+      <p><strong>Great news!</strong> Your device has been verified and approved.</p>
+      <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 15px 0;">
+        <p style="margin: 0; color: #166534; font-size: 15px;"><strong>${deviceName}</strong></p>
+        <p style="margin: 5px 0 0; color: #166534; font-size: 13px;">IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
+      </div>
       <p>Your device is now protected in our registry. If it's ever reported stolen or lost, we'll help with recovery efforts.</p>
-      <p>IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
     `;
 
+    const wrappedHtml = EmailTemplate.wrapContent(subject, message);
     await this.queueNotification(
       userId,
       "email",
       user.email,
       subject,
-      message,
+      wrappedHtml,
       {
-        deviceInfo: `${deviceInfo.brand} ${deviceInfo.model}`,
+        deviceInfo: deviceName,
         type: "device_verified",
       }
     );
@@ -316,26 +285,27 @@ class NotificationService {
     if (!user) return;
 
     const subject = "Device Verification Rejected";
+    const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <h2>Device Verification Update</h2>
-      <p>Unfortunately, we couldn't verify your device <strong>${
-        deviceInfo.brand
-      } ${deviceInfo.model}</strong>.</p>
-      <p><strong>Reason:</strong> ${
-        reason || "Insufficient proof of ownership"
-      }</p>
+      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Unfortunately, we couldn't verify your device.</p>
+      <div style="background: #FEF2F2; border-left: 4px solid #EF4444; padding: 16px; border-radius: 8px; margin: 15px 0;">
+        <p style="margin: 0; color: #991B1B; font-size: 15px;"><strong>${deviceName}</strong></p>
+        <p style="margin: 5px 0 0; color: #991B1B; font-size: 13px;">IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
+      </div>
+      <p><strong>Reason:</strong> ${reason || "Insufficient proof of ownership"}</p>
       <p>Please upload a clearer proof of purchase and try again.</p>
-      <p>IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
     `;
 
+    const wrappedHtml = EmailTemplate.wrapContent(subject, message);
     await this.queueNotification(
       userId,
       "email",
       user.email,
       subject,
-      message,
+      wrappedHtml,
       {
-        deviceInfo: `${deviceInfo.brand} ${deviceInfo.model}`,
+        deviceInfo: deviceName,
         type: "device_rejected",
       }
     );
@@ -351,25 +321,28 @@ class NotificationService {
     if (!user) return;
 
     const subject = `Device Reported Stolen - Case ${caseId}`;
+    const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <h2>Device Theft Report Confirmed</h2>
-      <p>Your device <strong>${deviceInfo.brand} ${
-      deviceInfo.model
-    }</strong> has been marked as stolen in our system.</p>
+      <p>Hello <strong>${user.name}</strong>,</p>
+      <p><strong>Your device has been marked as stolen</strong> in our system.</p>
+      <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 16px; border-radius: 8px; margin: 15px 0;">
+        <p style="margin: 0; color: #991B1B; font-size: 15px;"><strong>${deviceName}</strong></p>
+        <p style="margin: 5px 0 0; color: #991B1B; font-size: 13px;">IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
+      </div>
       <p><strong>Case ID:</strong> ${caseId}</p>
       <p>Law enforcement has been notified. We'll contact you if there are any updates.</p>
-      <p>IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
     `;
 
+    const wrappedHtml = EmailTemplate.wrapContent(subject, message);
     await this.queueNotification(
       userId,
       "email",
       user.email,
       subject,
-      message,
+      wrappedHtml,
       {
         caseId: caseId,
-        deviceInfo: `${deviceInfo.brand} ${deviceInfo.model}`,
+        deviceInfo: deviceName,
         type: "device_stolen",
       }
     );
@@ -391,28 +364,28 @@ class NotificationService {
 
     const subject = `New Case Assignment - ${caseInfo.case_id}`;
     const message = `
-      <h2>New Case Assignment</h2>
-      <p>A new ${
-        caseInfo.report_type
-      } case has been assigned to your agency.</p>
-      <p><strong>Case ID:</strong> ${caseInfo.case_id}</p>
-      <p><strong>Device:</strong> ${caseInfo.device_brand} ${
-      caseInfo.device_model
-    }</p>
-      <p><strong>IMEI:</strong> ${caseInfo.device_imei || "Not provided"}</p>
-      <p><strong>Location:</strong> ${caseInfo.location || "Not specified"}</p>
-      <p><strong>Occurred:</strong> ${new Date(
-        caseInfo.occurred_at
-      ).toLocaleString()}</p>
+      <p>Hello <strong>${lea.agency_name}</strong>,</p>
+      <p>A new <strong>${caseInfo.report_type}</strong> case has been assigned to your agency.</p>
+      <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
+        <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
+          <tr><td style="font-weight: 600; padding-right: 12px;">Case ID:</td><td>${caseInfo.case_id}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${caseInfo.device_brand} ${caseInfo.device_model}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">IMEI:</td><td>${caseInfo.device_imei || "Not provided"}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Location:</td><td>${caseInfo.location || "Not specified"}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Occurred:</td><td>${new Date(caseInfo.occurred_at).toLocaleString()}</td></tr>
+        </table>
+      </div>
       <p>Please log into the LEA portal to review case details and take action.</p>
     `;
 
+    const actionButton = { url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/lea/cases/${caseInfo.case_id}`, text: 'Review Case' };
+    const wrappedHtml = EmailTemplate.wrapContent(subject, message, { actionButton });
     await this.queueNotification(
       null,
       "email",
       lea.contact_email,
       subject,
-      message,
+      wrappedHtml,
       {
         caseId: caseInfo.case_id,
         type: "lea_new_case",
@@ -430,28 +403,29 @@ class NotificationService {
     if (!user) return;
 
     const subject = `Your Device May Have Been Found - Case ${caseId}`;
+    const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <h2>Great News!</h2>
-      <p>Someone has reported finding a device matching your <strong>${
-        deviceInfo.brand
-      } ${deviceInfo.model}</strong>.</p>
+      <p>Hello <strong>${user.name}</strong>,</p>
+      <p><strong>Great news!</strong> Someone has reported finding a device matching yours.</p>
+      <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 15px 0;">
+        <p style="margin: 0; color: #166534; font-size: 15px;"><strong>${deviceName}</strong></p>
+        <p style="margin: 5px 0 0; color: #166534; font-size: 13px;">IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
+      </div>
       <p><strong>Case ID:</strong> ${caseId}</p>
-      <p><strong>Finder Contact:</strong> ${
-        finderInfo.contact || "Available through LEA"
-      }</p>
+      <p><strong>Finder Contact:</strong> ${finderInfo.contact || "Available through LEA"}</p>
       <p>Law enforcement has been notified to coordinate the return. They will contact you soon.</p>
-      <p>IMEI/Serial: ${deviceInfo.imei || deviceInfo.serial}</p>
     `;
 
+    const wrappedHtml = EmailTemplate.wrapContent(subject, message);
     await this.queueNotification(
       userId,
       "email",
       user.email,
       subject,
-      message,
+      wrappedHtml,
       {
         caseId: caseId,
-        deviceInfo: `${deviceInfo.brand} ${deviceInfo.model}`,
+        deviceInfo: deviceName,
         type: "device_found",
       }
     );

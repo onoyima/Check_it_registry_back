@@ -2,6 +2,7 @@ const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const Database = require('../config');
 const NotificationService = require('./NotificationService');
+const EmailTemplate = require('./EmailTemplate');
 
 class OTPService {
   constructor() {
@@ -154,85 +155,97 @@ class OTPService {
   async sendOTPEmail(user, otpCode, otpType, expiryMinutes) {
     const templates = {
       email_verification: {
-        subject: 'Verify Your Email - Check It Registry',
-        template: `
-          <h2>Email Verification</h2>
-          <p>Hello ${user.name},</p>
+        subject: 'Verify Your Email',
+        title: 'Email Verification',
+        content: `
+          <p>Hello <strong>${user.name}</strong>,</p>
           <p>Your email verification code is:</p>
-          <h1 style="color: #646cff; font-size: 2em; letter-spacing: 0.2em;">${otpCode}</h1>
-          <p>This code will expire in ${expiryMinutes} minutes.</p>
-          <p>If you didn't request this verification, please ignore this email.</p>
+          <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
+          </div>
+          <p style="color: #6B7280;">This code will expire in <strong>${expiryMinutes} minutes</strong>.</p>
+          <p style="color: #9CA3AF; font-size: 13px;">If you didn't request this verification, please ignore this email.</p>
         `
       },
       device_transfer: {
-        subject: 'Device Transfer Verification - Check It Registry',
-        template: `
-          <h2>Device Transfer Verification</h2>
-          <p>Hello ${user.name},</p>
+        subject: 'Device Transfer Verification',
+        title: 'Device Transfer Verification',
+        content: `
+          <p>Hello <strong>${user.name}</strong>,</p>
           <p>Your device transfer verification code is:</p>
-          <h1 style="color: #646cff; font-size: 2em; letter-spacing: 0.2em;">${otpCode}</h1>
-          <p>This code will expire in ${expiryMinutes} minutes.</p>
-          <p>Only share this code with the person you're transferring the device to.</p>
+          <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
+          </div>
+          <p style="color: #6B7280;">This code will expire in <strong>${expiryMinutes} minutes</strong>.</p>
+          <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #92400E; font-size: 14px;"><strong>Important:</strong> Only share this code with the person you're transferring the device to.</p>
+          </div>
         `
       },
       password_reset: {
-        subject: 'Password Reset Code - Check It Registry',
-        template: `
-          <h2>Password Reset</h2>
-          <p>Hello ${user.name},</p>
+        subject: 'Password Reset Code',
+        title: 'Password Reset',
+        content: `
+          <p>Hello <strong>${user.name}</strong>,</p>
           <p>Your password reset code is:</p>
-          <h1 style="color: #646cff; font-size: 2em; letter-spacing: 0.2em;">${otpCode}</h1>
-          <p>This code will expire in ${expiryMinutes} minutes.</p>
-          <p>If you didn't request a password reset, please ignore this email.</p>
+          <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
+          </div>
+          <p style="color: #6B7280;">This code will expire in <strong>${expiryMinutes} minutes</strong>.</p>
+          <p style="color: #9CA3AF; font-size: 13px;">If you didn't request a password reset, please ignore this email.</p>
         `
       },
       '2fa': {
-        subject: 'Two-Factor Authentication Code - Check It Registry',
-        template: `
-          <h2>Two-Factor Authentication</h2>
-          <p>Hello ${user.name},</p>
+        subject: 'Two-Factor Authentication Code',
+        title: 'Two-Factor Authentication',
+        content: `
+          <p>Hello <strong>${user.name}</strong>,</p>
           <p>Your 2FA verification code is:</p>
-          <h1 style="color: #646cff; font-size: 2em; letter-spacing: 0.2em;">${otpCode}</h1>
-          <p>This code will expire in ${expiryMinutes} minutes.</p>
+          <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
+          </div>
+          <p style="color: #6B7280;">This code will expire in <strong>${expiryMinutes} minutes</strong>.</p>
         `
       },
       device_login: {
-        subject: 'New Device Login Verification - Check It Registry',
-        template: `
-          <h2>New Device Login Detected</h2>
-          <p>Hello ${user.name},</p>
+        subject: 'New Device Login Verification',
+        title: 'New Device Login Detected',
+        content: `
+          <p>Hello <strong>${user.name}</strong>,</p>
           <p>We detected a login from a new device. To complete your login, please enter this verification code:</p>
-          <h1 style="color: #646cff; font-size: 2em; letter-spacing: 0.2em;">${otpCode}</h1>
-          <p>This code will expire in ${expiryMinutes} minutes.</p>
-          <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 5px; margin: 15px 0;">
-            <p><strong>Security Tip:</strong> You can choose to "Remember this device" to avoid verification codes for future logins from this device.</p>
+          <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
           </div>
-          <p>If you didn't attempt to log in, please secure your account immediately by changing your password.</p>
+          <p style="color: #6B7280;">This code will expire in <strong>${expiryMinutes} minutes</strong>.</p>
+          <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #92400E; font-size: 14px;"><strong>Security Tip:</strong> You can choose to "Remember this device" to avoid verification codes for future logins from this device.</p>
+          </div>
+          <div style="background: #FEE2E2; border-left: 4px solid #EF4444; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #991B1B; font-size: 14px;"><strong>If you didn't attempt to log in,</strong> please secure your account immediately by changing your password.</p>
+          </div>
         `
       },
       device_verification: {
-        subject: 'Device Registration Verification - Check It Registry',
-        template: `
-          <h2>Verify Your Device Registration</h2>
-          <p>Hello ${user.name},</p>
+        subject: 'Device Registration Verification',
+        title: 'Verify Your Device Registration',
+        content: `
+          <p>Hello <strong>${user.name}</strong>,</p>
           <p>Please verify your device registration by entering this verification code:</p>
-          <h1 style="color: #646cff; font-size: 2em; letter-spacing: 0.2em;">${otpCode}</h1>
-          <p>This code will expire in ${expiryMinutes} minutes.</p>
+          <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
+          </div>
+          <p style="color: #6B7280;">This code will expire in <strong>${expiryMinutes} minutes</strong>.</p>
           <p>Once verified, your device will be reviewed by our admin team for final approval.</p>
-          <div style="background: #e7f3ff; border: 1px solid #b3d9ff; padding: 15px; border-radius: 5px; margin: 15px 0;">
-            <p><strong>Note:</strong> Device verification is required to ensure the security and authenticity of registered devices.</p>
+          <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #1E40AF; font-size: 14px;"><strong>Note:</strong> Device verification is required to ensure the security and authenticity of registered devices.</p>
           </div>
         `
       }
     };
 
-    const template = templates[otpType] || templates.email_verification;
-    
-    await NotificationService.sendEmailDirect(
-      user.email,
-      template.subject,
-      template.template
-    );
+    const tpl = templates[otpType] || templates.email_verification;
+    const fullHtml = EmailTemplate.wrapContent(tpl.title, tpl.content);
+    await NotificationService.sendEmailDirect(user.email, `${tpl.subject} - Check It`, fullHtml);
   }
 
   // Send OTP via SMS (placeholder for future SMS integration)

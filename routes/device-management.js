@@ -4,6 +4,7 @@
 const express = require("express");
 const Database = require("../config");
 const { authenticateToken } = require("../middleware/auth");
+const EmailTemplate = require("../services/EmailTemplate");
 
 const router = express.Router();
 
@@ -237,31 +238,19 @@ router.post("/", authenticateToken, async (req, res) => {
       const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
       const verifyLink = `${FRONTEND_URL}/verify-device?token=${verifyToken}`;
       const user = await Database.selectOne("users", "name, email", "id = ?", [userId]);
+      const emailContent = `
+        <p>Hello ${user.name},</p>
+        <p>We received a registration for your device: <strong>${brand} ${model}</strong>.</p>
+        <p>To confirm you are the owner, please verify this device.</p>
+        <p>If the button doesn't work, copy and paste this link into your browser:</p>
+        <p><a href="${verifyLink}">${verifyLink}</a></p>
+        <p>This link will expire in 24 hours. If it expires, you can request a new verification email from your devices page.</p>
+      `;
       await NotificationService.sendEmailDirect(
         user.email,
         "Verify Your Device Ownership - Check It Registry",
-        `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-              <h1>Verify Your Device</h1>
-            </div>
-            <div style="padding: 30px; background: #f9f9f9;">
-              <p>Hello ${user.name},</p>
-              <p>We received a registration for your device: <strong>${brand} ${model}</strong>.</p>
-              <p>To confirm you are the owner, please verify this device.</p>
-              <p>
-                <a href="${verifyLink}" style="display:inline-block;background:#646cff;color:white;padding:12px 18px;border-radius:6px;text-decoration:none;">Verify Ownership</a>
-              </p>
-              <p>If the button doesn’t work, copy and paste this link into your browser:</p>
-              <p><a href="${verifyLink}">${verifyLink}</a></p>
-              <p>This link will expire in 24 hours. If it expires, you can request a new verification email from your devices page.</p>
-            </div>
-            <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-              <p>This is an automated message from Check It Device Registry</p>
-            </div>
-          </div>
-        `
-      );
+        EmailTemplate.wrapContent('Verify Your Device', emailContent, { actionButton: { url: verifyLink, text: 'Verify Ownership' } })
+    );
     } catch (mailErr) {
       console.warn("Failed to send device ownership verification email:", mailErr);
     }
@@ -410,40 +399,31 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
       userId,
     ]);
 
+      const emailContent = `
+        <h2>Verification Successful</h2>
+        <p>Hello ${user.name},</p>
+        <p>Your device has been successfully verified:</p>
+
+        <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+          <h3>${device.brand} ${device.model}</h3>
+          <p><strong>Status:</strong> <span style="color: #10b981;">Verified ✅</span></p>
+          <p><strong>Verified on:</strong> ${new Date().toLocaleString()}</p>
+        </div>
+
+        <p>Your device is now fully protected in our registry. If it's ever reported stolen or lost, we'll help with recovery efforts.</p>
+
+        <p><strong>What's Next?</strong></p>
+        <ul>
+          <li>Your device is now searchable in our public database</li>
+          <li>You can report it as stolen/lost if needed</li>
+          <li>You can transfer ownership to others</li>
+          <li>You'll receive alerts for any suspicious activity</li>
+        </ul>
+      `;
     await NotificationService.sendEmailDirect(
       user.email,
       "Device Verified Successfully - Check It Registry",
-      `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-            <h1>✅ Device Verified!</h1>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <h2>Verification Successful</h2>
-            <p>Hello ${user.name},</p>
-            <p>Your device has been successfully verified:</p>
-            
-            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
-              <h3>${device.brand} ${device.model}</h3>
-              <p><strong>Status:</strong> <span style="color: #10b981;">Verified ✅</span></p>
-              <p><strong>Verified on:</strong> ${new Date().toLocaleString()}</p>
-            </div>
-            
-            <p>Your device is now fully protected in our registry. If it's ever reported stolen or lost, we'll help with recovery efforts.</p>
-            
-            <p><strong>What's Next?</strong></p>
-            <ul>
-              <li>Your device is now searchable in our public database</li>
-              <li>You can report it as stolen/lost if needed</li>
-              <li>You can transfer ownership to others</li>
-              <li>You'll receive alerts for any suspicious activity</li>
-            </ul>
-          </div>
-          <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-            <p>This is an automated message from Check It Device Registry</p>
-          </div>
-        </div>
-      `
+      EmailTemplate.wrapContent('Device Verified!', emailContent)
     );
 
     // Log device verification
@@ -529,29 +509,20 @@ router.post('/verify-device-link', async (req, res) => {
     // Send verification success email
     const NotificationService = require('../services/NotificationService');
     const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
+      const emailContent = `
+        <h2>Verification Successful</h2>
+        <p>Hello ${user.name},</p>
+        <p>Your device has been successfully verified:</p>
+        <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+          <h3>${device.brand} ${device.model}</h3>
+          <p><strong>Status:</strong> <span style="color: #10b981;">Verified ✅</span></p>
+          <p><strong>Verified on:</strong> ${new Date().toLocaleString()}</p>
+        </div>
+      `;
     await NotificationService.sendEmailDirect(
       user.email,
       'Device Verified Successfully - Check It Registry',
-      `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-            <h1>✅ Device Verified!</h1>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <h2>Verification Successful</h2>
-            <p>Hello ${user.name},</p>
-            <p>Your device has been successfully verified:</p>
-            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
-              <h3>${device.brand} ${device.model}</h3>
-              <p><strong>Status:</strong> <span style="color: #10b981;">Verified ✅</span></p>
-              <p><strong>Verified on:</strong> ${new Date().toLocaleString()}</p>
-            </div>
-          </div>
-          <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-            <p>This is an automated message from Check It Device Registry</p>
-          </div>
-        </div>
-      `
+      EmailTemplate.wrapContent('Device Verified!', emailContent)
     );
 
     // Log device verification
@@ -683,42 +654,33 @@ router.post("/report-stolen", authenticateToken, async (req, res) => {
       userId,
     ]);
 
+      const emailContent = `
+        <h2>Theft Report Confirmed</h2>
+        <p>Hello ${user.name},</p>
+        <p>Your device has been successfully reported as stolen:</p>
+
+        <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+          <h3>${device.brand} ${device.model}</h3>
+          <p><strong>Case ID:</strong> ${caseId}</p>
+          <p><strong>IMEI:</strong> ${device.imei || "Not provided"}</p>
+          <p><strong>Serial:</strong> ${device.serial || "Not provided"}</p>
+          <p><strong>Status:</strong> <span style="color: #dc2626;">Stolen 🚨</span></p>
+        </div>
+
+        <p><strong>What happens next:</strong></p>
+        <ul>
+          <li>Your device is now marked as stolen in our database</li>
+          <li>Law enforcement agencies have been notified</li>
+          <li>We'll monitor for any attempts to register this device</li>
+          <li>You'll be contacted if the device is found</li>
+        </ul>
+
+        <p>Keep your case ID <strong>${caseId}</strong> for reference.</p>
+      `;
     await NotificationService.sendEmailDirect(
       user.email,
       `Device Reported Stolen - Case ${caseId}`,
-      `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #dc2626; color: white; padding: 20px; text-align: center;">
-            <h1>🚨 Device Reported Stolen</h1>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <h2>Theft Report Confirmed</h2>
-            <p>Hello ${user.name},</p>
-            <p>Your device has been successfully reported as stolen:</p>
-            
-            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
-              <h3>${device.brand} ${device.model}</h3>
-              <p><strong>Case ID:</strong> ${caseId}</p>
-              <p><strong>IMEI:</strong> ${device.imei || "Not provided"}</p>
-              <p><strong>Serial:</strong> ${device.serial || "Not provided"}</p>
-              <p><strong>Status:</strong> <span style="color: #dc2626;">Stolen 🚨</span></p>
-            </div>
-            
-            <p><strong>What happens next:</strong></p>
-            <ul>
-              <li>Your device is now marked as stolen in our database</li>
-              <li>Law enforcement agencies have been notified</li>
-              <li>We'll monitor for any attempts to register this device</li>
-              <li>You'll be contacted if the device is found</li>
-            </ul>
-            
-            <p>Keep your case ID <strong>${caseId}</strong> for reference.</p>
-          </div>
-          <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-            <p>This is an automated message from Check It Device Registry</p>
-          </div>
-        </div>
-      `
+      EmailTemplate.wrapContent('Device Reported Stolen', emailContent)
     );
 
     // Log theft report
@@ -795,50 +757,33 @@ router.post("/report-found", authenticateToken, async (req, res) => {
     ]);
     const NotificationService = require("../services/NotificationService");
 
+      const emailContent = `
+        <h2>Great News!</h2>
+        <p>Hello ${owner.name},</p>
+        <p>Someone has reported finding a device matching your stolen ${device.brand} ${device.model}:</p>
+
+        <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+          <h3>Found Device Report</h3>
+          <p><strong>Case ID:</strong> ${caseId}</p>
+          <p><strong>Found Location:</strong> ${found_location || "Not specified"}</p>
+          <p><strong>Finder Contact:</strong> ${finder_contact || "Available through support"}</p>
+          <p><strong>Description:</strong> ${description || "No additional details"}</p>
+        </div>
+
+        <p><strong>Next Steps:</strong></p>
+        <ul>
+          <li>Our team will verify this report</li>
+          <li>We'll coordinate with law enforcement</li>
+          <li>You'll be contacted to arrange device recovery</li>
+          <li>Please have your proof of ownership ready</li>
+        </ul>
+
+        <p>Case ID: <strong>${caseId}</strong></p>
+      `;
     await NotificationService.sendEmailDirect(
       owner.email,
       `Your Device May Have Been Found - Case ${caseId}`,
-      `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-            <h1>🎉 Device Possibly Found!</h1>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <h2>Great News!</h2>
-            <p>Hello ${owner.name},</p>
-            <p>Someone has reported finding a device matching your stolen ${
-              device.brand
-            } ${device.model}:</p>
-            
-            <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
-              <h3>Found Device Report</h3>
-              <p><strong>Case ID:</strong> ${caseId}</p>
-              <p><strong>Found Location:</strong> ${
-                found_location || "Not specified"
-              }</p>
-              <p><strong>Finder Contact:</strong> ${
-                finder_contact || "Available through support"
-              }</p>
-              <p><strong>Description:</strong> ${
-                description || "No additional details"
-              }</p>
-            </div>
-            
-            <p><strong>Next Steps:</strong></p>
-            <ul>
-              <li>Our team will verify this report</li>
-              <li>We'll coordinate with law enforcement</li>
-              <li>You'll be contacted to arrange device recovery</li>
-              <li>Please have your proof of ownership ready</li>
-            </ul>
-            
-            <p>Case ID: <strong>${caseId}</strong></p>
-          </div>
-          <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-            <p>This is an automated message from Check It Device Registry</p>
-          </div>
-        </div>
-      `
+      EmailTemplate.wrapContent('Device Possibly Found!', emailContent)
     );
 
     res.status(201).json({

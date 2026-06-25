@@ -370,7 +370,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     const user = await Database.selectOne(
       'users',
-      'id, name, email, role, region, phone, profile_image_url, verified_at, created_at, login_count, last_login_at, kyc_status, is_verified, caution_flag',
+      'id, name, email, role, region, phone, profile_image_url, verified_photo_url, verified_at, created_at, login_count, last_login_at, kyc_status, is_verified, caution_flag',
       'id = ?',
       [req.user.id]
     );
@@ -640,20 +640,26 @@ router.post('/reset-password', async (req, res) => {
     // Send password reset confirmation email
     try {
       const NotificationService = require('../services/NotificationService');
-      await NotificationService.sendEmail(
+      const EmailTemplate = require('../services/EmailTemplate');
+      const content = `
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Your password has been successfully reset.</p>
+        <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
+          <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
+            <tr><td style="font-weight: 600; padding-right: 12px;">Time:</td><td>${new Date().toLocaleString()}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">IP Address:</td><td>${req.ip}</td></tr>
+          </table>
+        </div>
+        <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+          <p style="margin: 0; color: #991B1B; font-size: 14px;"><strong>If you didn't make this change,</strong> please contact support immediately.</p>
+        </div>
+        <p style="color: #6B7280;">For security, all your existing sessions have been logged out.</p>
+      `;
+      const fullHtml = EmailTemplate.wrapContent('Password Reset Successful', content);
+      await NotificationService.sendEmailDirect(
         email,
-        'Password Reset Successful - Check It Registry',
-        `
-          <h2>Password Reset Successful</h2>
-          <p>Hello ${user.name},</p>
-          <p>Your password has been successfully reset.</p>
-          <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 15px 0;">
-            <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
-            <p><strong>IP Address:</strong> ${req.ip}</p>
-          </div>
-          <p>If you didn't make this change, please contact support immediately.</p>
-          <p>For security, all your existing sessions have been logged out.</p>
-        `
+        'Password Reset Successful - Check It',
+        fullHtml
       );
     } catch (emailError) {
       console.error('Failed to send password reset confirmation email:', emailError);

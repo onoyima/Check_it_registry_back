@@ -267,6 +267,106 @@ router.get('/cases', async (req, res) => {
   }
 });
 
+// GET /api/lea-portal/device-search - Advanced device search for LEA
+router.get('/device-search', async (req, res) => {
+  try {
+    const { imei, serial, brand, model, owner_name, owner_email, region, status, limit = 50 } = req.query;
+    const userRegion = req.user.region;
+    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionParams = req.user.role === 'admin' ? [] : [userRegion];
+
+    const conditions = ['1=1'];
+    const params = [];
+    if (imei) { conditions.push('d.imei LIKE ?'); params.push(`%${imei}%`); }
+    if (serial) { conditions.push('d.serial LIKE ?'); params.push(`%${serial}%`); }
+    if (brand) { conditions.push('d.brand LIKE ?'); params.push(`%${brand}%`); }
+    if (model) { conditions.push('d.model LIKE ?'); params.push(`%${model}%`); }
+    if (owner_name) { conditions.push('u.name LIKE ?'); params.push(`%${owner_name}%`); }
+    if (owner_email) { conditions.push('u.email LIKE ?'); params.push(`%${owner_email}%`); }
+    if (region) { conditions.push('u.region LIKE ?'); params.push(`%${region}%`); }
+    if (status && status !== 'all') { conditions.push('d.status = ?'); params.push(status); }
+
+    const sql = `
+      SELECT d.id, d.brand, d.model, d.imei, d.serial, d.status, d.created_at,
+        u.name as owner_name, u.email as owner_email, u.phone as owner_phone, u.region as owner_region,
+        (SELECT MAX(created_at) FROM device_check_logs WHERE device_id = d.id) as last_check_at,
+        (SELECT COUNT(*) FROM reports WHERE device_id = d.id) as report_count
+      FROM devices d
+      JOIN users u ON d.user_id = u.id
+      WHERE ${conditions.join(' AND ')} ${regionFilter}
+      ORDER BY d.created_at DESC
+      LIMIT ?
+    `;
+
+    const devices = await Database.query(sql, [...params, ...regionParams, parseInt(limit)]);
+    res.json({ devices });
+  } catch (error) {
+    console.error('LEA device search error:', error);
+    res.status(500).json({ error: 'Device search failed' });
+  }
+});
+
+// GET /api/lea-portal/recovery - List recovery operations (from reports)
+router.get('/recovery', async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const userRegion = req.user.region;
+    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionParams = req.user.role === 'admin' ? [] : [userRegion];
+
+    let statusFilter = '';
+    const statusParams = [];
+    if (status && status !== 'all') {
+      if (status === 'pending_recovery') {
+        statusFilter = 'AND r.status IN (?)';
+        statusParams.push(['open', 'under_review']);
+      } else if (status === 'recovered') {
+        statusFilter = 'AND r.status IN (?)';
+        statusParams.push(['resolved']);
+      } else {
+        statusFilter = 'AND r.status = ?';
+        statusParams.push(status);
+      }
+    }
+
+    const [countResult] = await Database.query(`
+      SELECT COUNT(*) as total
+      FROM reports r
+      JOIN devices d ON r.device_id = d.id
+      JOIN users u ON d.user_id = u.id
+      WHERE r.report_type IN ('stolen', 'lost', 'found') ${regionFilter} ${statusFilter}
+    `, [...regionParams, ...statusParams]);
+
+    const records = await Database.query(`
+      SELECT
+        r.id, r.case_id, r.report_type, r.status, r.description as notes, r.created_at, r.updated_at,
+        d.brand as device_brand, d.model as device_model, d.imei, d.serial,
+        u.name as owner_name, u.email as owner_email, u.phone as owner_phone,
+        (SELECT name FROM users WHERE id = r.assigned_lea_id) as recovered_by,
+        (SELECT updated_at FROM reports WHERE id = r.id AND status = 'resolved') as recovered_at
+      FROM reports r
+      JOIN devices d ON r.device_id = d.id
+      JOIN users u ON d.user_id = u.id
+      WHERE r.report_type IN ('stolen', 'lost', 'found') ${regionFilter} ${statusFilter}
+      ORDER BY r.updated_at DESC
+      LIMIT ? OFFSET ?
+    `, [...regionParams, ...statusParams, parseInt(limit), offset]);
+
+    res.json({
+      records,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil((countResult?.total || 0) / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('LEA recovery error:', error);
+    res.status(500).json({ error: 'Failed to load recovery records' });
+  }
+});
+
 // Get device details for LEA
 router.get('/devices/:id', async (req, res) => {
   try {

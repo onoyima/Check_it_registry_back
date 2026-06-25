@@ -78,4 +78,76 @@ router.get('/balance', authenticateToken, async (req, res) => {
   }
 });
 
+// Get user transactions
+router.get('/transactions', authenticateToken, async (req, res) => {
+  try {
+    const Database = require('../config.js');
+    const userId = req.user.id;
+    const { limit = 50, offset = 0 } = req.query;
+
+    const sql = `
+      SELECT id, type, amount, status, reference, related_entity_type as method, created_at
+      FROM transactions
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    const rows = await Database.query(sql, [userId, parseInt(limit), parseInt(offset)]);
+
+    const map = rows.map(r => ({
+      id: r.id,
+      type: r.type === 'marketplace_purchase' || r.type === 'marketplace_sale' ? 'payment' : r.type === 'refunded' ? 'refund' : 'fee',
+      amount: parseFloat(r.amount),
+      status: r.status,
+      method: r.method || 'manual',
+      description: r.type === 'marketplace_purchase' ? 'Marketplace purchase' : r.type === 'marketplace_sale' ? 'Marketplace sale' : r.type,
+      reference: r.reference || r.id,
+      created_at: r.created_at,
+    }));
+
+    res.json({ data: map });
+  } catch (err) {
+    console.error('Get transactions error:', err);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  }
+});
+
+// Get single transaction by ID
+router.get('/transactions/:id', authenticateToken, async (req, res) => {
+  try {
+    const Database = require('../config.js');
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const sql = `
+      SELECT id, type, amount, status, reference, related_entity_type as method, created_at
+      FROM transactions
+      WHERE id = ? AND user_id = ?
+    `;
+    const rows = await Database.query(sql, [id, userId]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    const r = rows[0];
+    res.json({
+      data: {
+        id: r.id,
+        amount: parseFloat(r.amount),
+        status: r.status,
+        method: r.method || 'manual',
+        description: r.type === 'marketplace_purchase' ? 'Marketplace purchase'
+          : r.type === 'marketplace_sale' ? 'Marketplace sale'
+          : r.type === 'service_fee' ? 'Platform fee' : r.type,
+        reference: r.reference || r.id,
+        created_at: r.created_at,
+      },
+    });
+  } catch (err) {
+    console.error('Get transaction error:', err);
+    res.status(500).json({ error: 'Failed to fetch transaction' });
+  }
+});
+
 module.exports = router;

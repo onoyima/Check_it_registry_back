@@ -239,18 +239,20 @@ router.put('/users/:userId/role', async (req, res) => {
     );
 
     // Send notification to user
+    const EmailTemplate = require('../services/EmailTemplate');
     await NotificationService.queueNotification(
       userId,
       'email',
       user.email,
       'Account Role Updated',
       `
-        <h2>Account Role Updated</h2>
-        <p>Hello ${user.name},</p>
+        <p>Hello <strong>${user.name}</strong>,</p>
         <p>Your account role has been updated by an administrator.</p>
-        <p><strong>Previous Role:</strong> ${oldRole}</p>
-        <p><strong>New Role:</strong> ${role}</p>
-        ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
+        <div style="background: #F3F4F6; border-radius: 8px; padding: 12px 16px; margin: 15px 0;">
+          <p style="margin: 5px 0;"><strong>Previous Role:</strong> ${oldRole}</p>
+          <p style="margin: 5px 0;"><strong>New Role:</strong> ${role}</p>
+          ${reason ? `<p style="margin: 5px 0;"><strong>Reason:</strong> ${reason}</p>` : ''}
+        </div>
         <p>This change may affect your access permissions in the system.</p>
         <p>If you have questions about this change, please contact support.</p>
       `,
@@ -359,16 +361,14 @@ router.put('/users/:userId/suspend', async (req, res) => {
       user.email,
       suspended ? 'Account Suspended' : 'Account Reactivated',
       suspended ? `
-        <h2>Account Suspended</h2>
-        <p>Hello ${user.name},</p>
-        <p>Your account has been suspended by an administrator.</p>
-        ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Your account has been <strong style="color: #DC2626;">suspended</strong> by an administrator.</p>
+        ${reason ? `<div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 12px 16px; border-radius: 8px; margin: 15px 0;"><p style="margin: 0; color: #991B1B;"><strong>Reason:</strong> ${reason}</p></div>` : ''}
         <p>If you believe this is an error, please contact support.</p>
       ` : `
-        <h2>Account Reactivated</h2>
-        <p>Hello ${user.name},</p>
-        <p>Your account has been reactivated and you can now access the system normally.</p>
-        ${reason ? `<p><strong>Note:</strong> ${reason}</p>` : ''}
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Your account has been <strong style="color: #16A34A;">reactivated</strong> and you can now access the system normally.</p>
+        ${reason ? `<div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 12px 16px; border-radius: 8px; margin: 15px 0;"><p style="margin: 0; color: #166534;"><strong>Note:</strong> ${reason}</p></div>` : ''}
       `,
       {
         type: suspended ? 'account_suspended' : 'account_reactivated'
@@ -435,11 +435,14 @@ router.post('/users/:userId/reset-password', async (req, res) => {
         user.email,
         'Password Reset by Administrator',
         `
-          <h2>Password Reset</h2>
-          <p>Hello ${user.name},</p>
+          <p>Hello <strong>${user.name}</strong>,</p>
           <p>Your password has been reset by an administrator.</p>
-          <p><strong>New Password:</strong> ${new_password}</p>
-          <p><strong>Important:</strong> Please log in and change your password immediately for security.</p>
+          <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #92400E; font-size: 14px;"><strong>Temporary Password:</strong> <code style="background: #FFF; padding: 4px 8px; border-radius: 4px; font-size: 14px;">${new_password}</code></p>
+          </div>
+          <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #991B1B; font-size: 14px;"><strong>Important:</strong> Please log in and change your password immediately for security.</p>
+          </div>
           <p>If you did not request this password reset, please contact support immediately.</p>
         `,
         {

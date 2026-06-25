@@ -1,6 +1,7 @@
 // Payment Recovery Service - Paid device recovery services
 const Database = require('../config');
 const NotificationService = require('./NotificationService');
+const EmailTemplate = require('./EmailTemplate');
 
 class PaymentRecoveryService {
   constructor() {
@@ -286,7 +287,7 @@ class PaymentRecoveryService {
       await NotificationService.sendEmailDirect(
         service.user_email,
         'Recovery Service Activated - Check It Registry',
-        this.generateActivationEmail(service, agent)
+        EmailTemplate.wrapContent('Recovery Service Activated', this.generateActivationEmail(service, agent))
       );
 
       // Notify assigned agent
@@ -523,7 +524,7 @@ class PaymentRecoveryService {
           await NotificationService.sendEmailDirect(
             user.email,
             'Recovery Service Refund Processed - Check It Registry',
-            this.generateRefundEmail(service, refundAmount)
+            EmailTemplate.wrapContent('Refund Processed', this.generateRefundEmail(service, refundAmount))
           );
         }
       }
@@ -669,8 +670,8 @@ class PaymentRecoveryService {
 
       await NotificationService.sendEmailDirect(
         service.user_email,
-        `Recovery Update: ${this.getStatusDisplayName(newStatus)} - Check It Registry`,
-        this.generateStatusUpdateEmail(service, oldStatus, newStatus)
+        `Recovery Update: ${this.getStatusDisplayName(newStatus)} - Check It`,
+        EmailTemplate.wrapContent('Recovery Status Update', this.generateStatusUpdateEmail(service, oldStatus, newStatus))
       );
 
     } catch (error) {
@@ -685,7 +686,7 @@ class PaymentRecoveryService {
       switch (type) {
         case 'new_assignment':
           subject = `New Recovery Case Assignment - ${service.brand} ${service.model}`;
-          content = this.generateAgentAssignmentEmail(agent, service);
+          content = EmailTemplate.wrapContent('New Recovery Case', this.generateAgentAssignmentEmail(agent, service));
           break;
         default:
           return;
@@ -716,140 +717,106 @@ class PaymentRecoveryService {
   // Email templates
   generateActivationEmail(service, agent) {
     return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-          <h1>🚀 Recovery Service Activated</h1>
-        </div>
-        <div style="padding: 30px; background: #f9f9f9;">
-          <h2>Your Recovery Service is Now Active</h2>
-          <p>Hello ${service.user_name},</p>
-          <p>Your ${this.packages[service.service_package].name} recovery service has been activated for:</p>
-          
-          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>${service.brand} ${service.model}</h3>
-            <p><strong>Service Package:</strong> ${this.packages[service.service_package].name}</p>
-            <p><strong>Active Until:</strong> ${new Date(service.expires_at).toLocaleDateString()}</p>
-            ${agent ? `<p><strong>Assigned Agent:</strong> ${agent.name}</p>` : ''}
-          </div>
-          
-          <p><strong>What happens next:</strong></p>
-          <ul>
-            <li>Our system will actively monitor for your device</li>
-            <li>You'll receive alerts when your device is checked</li>
-            ${agent ? `<li>Your assigned agent will investigate leads</li>` : ''}
-            <li>We'll coordinate with law enforcement as needed</li>
-            <li>You'll receive regular status updates</li>
-          </ul>
-          
-          ${agent ? `
-            <div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
-              <p><strong>Your Recovery Agent:</strong></p>
-              <p>Name: ${agent.name}<br>
-              Email: ${agent.email}<br>
-              ${agent.phone ? `Phone: ${agent.phone}<br>` : ''}
-              Specialization: ${JSON.parse(agent.specialization || '[]').join(', ')}</p>
-            </div>
-          ` : ''}
-        </div>
-        <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
-        </div>
+      <p>Hello ${service.user_name},</p>
+      <p>Your <strong>${this.packages[service.service_package].name}</strong> recovery service has been activated for:</p>
+
+      <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 20px 0;">
+        <h3 style="margin: 0 0 10px; color: #166534;">${service.brand} ${service.model}</h3>
+        <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #166534;">
+          <tr><td style="font-weight: 600; padding-right: 12px;">Service Package:</td><td>${this.packages[service.service_package].name}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Active Until:</td><td>${new Date(service.expires_at).toLocaleDateString()}</td></tr>
+          ${agent ? `<tr><td style="font-weight: 600; padding-right: 12px;">Assigned Agent:</td><td>${agent.name}</td></tr>` : ''}
+        </table>
       </div>
+
+      <p><strong>What happens next:</strong></p>
+      <ul style="color: #374151; line-height: 1.8;">
+        <li>Our system will actively monitor for your device</li>
+        <li>You'll receive alerts when your device is checked</li>
+        ${agent ? `<li>Your assigned agent will investigate leads</li>` : ''}
+        <li>We'll coordinate with law enforcement as needed</li>
+        <li>You'll receive regular status updates</li>
+      </ul>
+
+      ${agent ? `
+        <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 16px; border-radius: 8px; margin: 20px 0;">
+          <h3 style="margin: 0 0 8px; color: #1E40AF; font-size: 15px;">Your Recovery Agent</h3>
+          <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #1E40AF;">
+            <tr><td style="font-weight: 600; padding-right: 12px;">Name:</td><td>${agent.name}</td></tr>
+            <tr><td style="font-weight: 600; padding-right: 12px;">Email:</td><td>${agent.email}</td></tr>
+            ${agent.phone ? `<tr><td style="font-weight: 600; padding-right: 12px;">Phone:</td><td>${agent.phone}</td></tr>` : ''}
+            <tr><td style="font-weight: 600; padding-right: 12px;">Specialization:</td><td>${JSON.parse(agent.specialization || '[]').join(', ')}</td></tr>
+          </table>
+        </div>
+      ` : ''}
     `;
   }
 
   generateStatusUpdateEmail(service, oldStatus, newStatus) {
     return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-          <h1>📋 Recovery Status Update</h1>
-        </div>
-        <div style="padding: 30px; background: #f9f9f9;">
-          <h2>Recovery Progress Update</h2>
-          <p>Hello ${service.user_name},</p>
-          <p>There's an update on your recovery service for:</p>
-          
-          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>${service.brand} ${service.model}</h3>
-            <p><strong>Status:</strong> ${this.getStatusDisplayName(oldStatus)} → <strong>${this.getStatusDisplayName(newStatus)}</strong></p>
-            ${service.agent_name ? `<p><strong>Agent:</strong> ${service.agent_name}</p>` : ''}
-            ${service.service_notes ? `<p><strong>Notes:</strong> ${service.service_notes}</p>` : ''}
-          </div>
-          
-          ${newStatus === 'recovered' ? `
-            <div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 5px;">
-              <h4 style="color: #155724;">🎉 Great News!</h4>
-              <p style="color: #155724;">Your device has been recovered! We'll be in touch with details on how to retrieve it.</p>
-            </div>
-          ` : newStatus === 'unsuccessful' ? `
-            <div style="background: #f8d7da; border: 1px solid #f5c6cb; padding: 15px; border-radius: 5px;">
-              <h4 style="color: #721c24;">Recovery Update</h4>
-              <p style="color: #721c24;">Unfortunately, we were unable to recover your device. A partial refund has been processed to your original payment method.</p>
-            </div>
-          ` : ''}
-        </div>
-        <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
-        </div>
+      <p>Hello ${service.user_name},</p>
+      <p>There's an update on your recovery service for:</p>
+
+      <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 20px 0;">
+        <h3 style="margin: 0 0 10px; color: #111827;">${service.brand} ${service.model}</h3>
+        <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
+          <tr><td style="font-weight: 600; padding-right: 12px;">Status:</td><td><span style="color: #2563EB;">${this.getStatusDisplayName(oldStatus)}</span> → <span style="color: #2563EB; font-weight: 600;">${this.getStatusDisplayName(newStatus)}</span></td></tr>
+          ${service.agent_name ? `<tr><td style="font-weight: 600; padding-right: 12px;">Agent:</td><td>${service.agent_name}</td></tr>` : ''}
+          ${service.service_notes ? `<tr><td style="font-weight: 600; padding-right: 12px;">Notes:</td><td>${service.service_notes}</td></tr>` : ''}
+        </table>
       </div>
+
+      ${newStatus === 'recovered' ? `
+        <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="margin: 0 0 5px; color: #166534;">Great News!</h4>
+          <p style="margin: 0; color: #166534;">Your device has been recovered! We'll be in touch with details on how to retrieve it.</p>
+        </div>
+      ` : newStatus === 'unsuccessful' ? `
+        <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 16px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="margin: 0 0 5px; color: #991B1B;">Recovery Update</h4>
+          <p style="margin: 0; color: #991B1B;">Unfortunately, we were unable to recover your device. A partial refund has been processed to your original payment method.</p>
+        </div>
+      ` : ''}
     `;
   }
 
   generateRefundEmail(service, refundAmount) {
     return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #6c757d; color: white; padding: 20px; text-align: center;">
-          <h1>💰 Refund Processed</h1>
-        </div>
-        <div style="padding: 30px; background: #f9f9f9;">
-          <h2>Recovery Service Refund</h2>
-          <p>Hello,</p>
-          <p>We've processed a refund for your recovery service:</p>
-          
-          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>Refund Details</h3>
-            <p><strong>Device:</strong> ${service.brand} ${service.model}</p>
-            <p><strong>Original Amount:</strong> $${service.amount_paid}</p>
-            <p><strong>Refund Amount:</strong> $${refundAmount}</p>
-            <p><strong>Refund Method:</strong> Original payment method</p>
-          </div>
-          
-          <p>The refund will appear in your account within 5-10 business days.</p>
-          <p>We apologize that we couldn't recover your device this time.</p>
-        </div>
-        <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
-        </div>
+      <p>Hello,</p>
+      <p>We've processed a refund for your recovery service:</p>
+
+      <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 20px 0;">
+        <h3 style="margin: 0 0 10px; color: #111827;">Refund Details</h3>
+        <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
+          <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${service.brand} ${service.model}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Original Amount:</td><td>$${service.amount_paid}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Refund Amount:</td><td>$${refundAmount}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Refund Method:</td><td>Original payment method</td></tr>
+        </table>
       </div>
+
+      <p>The refund will appear in your account within 5-10 business days.</p>
+      <p>We apologize that we couldn't recover your device this time.</p>
     `;
   }
 
   generateAgentAssignmentEmail(agent, service) {
     return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #dc3545; color: white; padding: 20px; text-align: center;">
-          <h1>🎯 New Recovery Case</h1>
-        </div>
-        <div style="padding: 30px; background: #f9f9f9;">
-          <h2>Case Assignment</h2>
-          <p>Hello ${agent.name},</p>
-          <p>You have been assigned a new recovery case:</p>
-          
-          <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>Case Details</h3>
-            <p><strong>Device:</strong> ${service.brand} ${service.model}</p>
-            <p><strong>Category:</strong> ${service.category}</p>
-            <p><strong>Service Package:</strong> ${this.packages[service.service_package].name}</p>
-            <p><strong>Client:</strong> ${service.user_name}</p>
-            <p><strong>Active Until:</strong> ${new Date(service.expires_at).toLocaleDateString()}</p>
-          </div>
-          
-          <p>Please log into the agent portal to review case details and begin investigation.</p>
-        </div>
-        <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
-        </div>
+      <p>Hello <strong>${agent.name}</strong>,</p>
+      <p>You have been assigned a new recovery case.</p>
+
+      <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 16px; border-radius: 8px; margin: 20px 0;">
+        <h3 style="margin: 0 0 10px; color: #991B1B;">Case Details</h3>
+        <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #991B1B;">
+          <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${service.brand} ${service.model}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Category:</td><td>${service.category}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Service Package:</td><td>${this.packages[service.service_package].name}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Client:</td><td>${service.user_name}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Active Until:</td><td>${new Date(service.expires_at).toLocaleDateString()}</td></tr>
+        </table>
       </div>
+
+      <p>Please log into the agent portal to review case details and begin investigation.</p>
     `;
   }
 }

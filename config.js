@@ -20,6 +20,7 @@ const dbConfig = {
 // Create connection pool
 let pool;
 try {
+  console.log('🔌 DB Config:', JSON.stringify({ host: dbConfig.host, port: dbConfig.port, user: dbConfig.user, database: dbConfig.database }));
   pool = mysql.createPool(dbConfig);
   console.log('✅ Database connection pool created');
 } catch (error) {

@@ -1,28 +1,23 @@
 const Database = require('../config.js');
+const PaystackService = require('./PaystackService');
 
 class PaymentService {
   static async addPaymentMethod(userId, data) {
     const { type, provider, name, number, exp, cvc, country, address, city, postal, isDefault } = data;
     
-    // Validate card (basic)
     if (!number || number.length < 13) throw new Error('Invalid card number');
 
     const id = Database.generateUUID();
     const last4 = number.slice(-4);
     const [expMonth, expYear] = exp.split('/').map(n => parseInt(n.trim()));
 
-    // Encrypt details (Simulated encryption)
     const details = JSON.stringify({
       name,
-      // In real app, never store full number/cvc. Here we simulate a token.
       token: `${provider}_tok_${Date.now()}`,
       billing_address: { country, address, city, postal }
     });
 
-    // If simulating Stripe/Paystack, we would call their API here to get a token.
-
     if (isDefault) {
-      // Unset previous default
       await Database.query('UPDATE payment_methods SET is_default = FALSE WHERE user_id = ?', [userId]);
     }
 
@@ -63,39 +58,87 @@ class PaymentService {
       user_id: userId,
       amount,
       currency: 'NGN',
-      type, // 'marketplace_purchase', 'subscription'
+      type,
       status: 'pending',
       related_entity_type: entityType,
       related_entity_id: relatedEntityId,
       created_at: new Date(),
       updated_at: new Date()
     };
-
     await Database.insert('transactions', transaction);
     return transaction;
   }
 
-  static async processPayment(userId, amount, methodId) {
-    // 1. Get payment method
-    const method = await Database.selectOne('payment_methods', '*', 'id = ? AND user_id = ?', [methodId, userId]);
-    if (!method) throw new Error('Invalid payment method');
+  // Initialize a Paystack payment for a purchase
+  // Returns the authorization URL the buyer must visit to complete payment
+  static async initializePaystackPayment({ userId, email, amount, reference, listingId, metadata }) {
+    const user = await Database.selectOne('users', 'name', 'id = ?', [userId]);
+    const result = await PaystackService.initializeTransaction({
+      email,
+      amount,
+      reference,
+      metadata: {
+        ...metadata,
+        userId,
+        listingId,
+        customer_name: user?.name || '',
+      },
+    });
 
-    // 2. Simulate processor call
-    // await stripe.charges.create(...)
-    
-    // Simulate Success
-    const success = true; 
-    
-    if (!success) {
-      throw new Error('Payment declined');
+    return {
+      authorizationUrl: result.data.authorization_url,
+      accessCode: result.data.access_code,
+      reference,
+    };
+  }
+
+  // Verify a Paystack payment after the user completes it
+  static async verifyPaystackPayment(reference) {
+    const result = await PaystackService.verifyTransaction(reference);
+    if (!result.status || result.data.status !== 'success') {
+      throw new Error('Payment verification failed');
     }
+    return {
+      verified: true,
+      amount: result.data.amount / 100,
+      paidAt: result.data.paid_at,
+      channel: result.data.channel,
+      cardLast4: result.data.authorization?.last4,
+    };
+  }
+
+  // Initiate payout to seller's bank account via Paystack transfer
+  static async payoutToSeller({ sellerId, amount, reference, reason }) {
+    const bankAccount = await Database.selectOne('seller_bank_accounts', '*', 'user_id = ? AND is_verified = 1', [sellerId]);
+    if (!bankAccount) throw new Error('Seller has no verified bank account for payout');
+    if (!bankAccount.recipient_code) throw new Error('Seller recipient code not found');
+
+    const result = await PaystackService.initiateTransfer({
+      amount,
+      recipientCode: bankAccount.recipient_code,
+      reference,
+      reason,
+    });
+
+    if (!result.status) throw new Error('Payout failed: ' + (result.message || 'Unknown error'));
 
     return {
       success: true,
-      transaction_id: `txn_${Date.now()}`,
-      status: 'completed'
+      transferCode: result.data.transfer_code || result.data.code,
+      amount: result.data.amount / 100,
+      status: result.data.status,
     };
   }
+
+  // Get Paystack balance
+  static async getPaystackBalance() {
+    const result = await PaystackService.getBalance();
+    return result.data.map(b => ({
+      currency: b.currency,
+      balance: b.balance / 100,
+    }));
+  }
+
   static async getWalletBalance(userId) {
     const sql = `
       SELECT 

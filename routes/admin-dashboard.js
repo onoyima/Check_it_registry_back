@@ -63,8 +63,29 @@ router.get('/stats', async (req, res) => {
         SELECT COUNT(*) as count 
         FROM reports 
         WHERE status IN ('active', 'pending_verification')
+      `),
+
+      // Escrow stats
+      Database.query(`
+        SELECT 
+          COUNT(*) as total_transactions,
+          SUM(CASE WHEN status = 'held' THEN 1 ELSE 0 END) as held_count,
+          SUM(CASE WHEN status = 'released' THEN 1 ELSE 0 END) as released_count,
+          SUM(CASE WHEN status = 'disputed' THEN 1 ELSE 0 END) as disputed_count,
+          SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) as refunded_count,
+          COALESCE(SUM(CASE WHEN status = 'held' THEN amount ELSE 0 END), 0) as total_held_amount,
+          COALESCE(SUM(CASE WHEN status = 'released' THEN platform_fee_amount ELSE 0 END), 0) as total_fees_collected
+        FROM escrow_transactions
+      `),
+
+      // Platform fee percent
+      Database.query(`
+        SELECT setting_value FROM system_settings WHERE setting_key = 'platform_fee_percent'
       `)
     ]);
+
+    const escrow = stats[8][0];
+    const platformFeeRow = stats[9];
 
     res.json({
       total_users: stats[0][0].count,
@@ -74,7 +95,17 @@ router.get('/stats', async (req, res) => {
       reports_by_type: stats[4],
       new_users_30_days: stats[5][0].count,
       new_devices_30_days: stats[6][0].count,
-      active_cases: stats[7][0].count
+      active_cases: stats[7][0].count,
+      escrow: {
+        total_transactions: escrow.total_transactions || 0,
+        held: escrow.held_count || 0,
+        released: escrow.released_count || 0,
+        disputed: escrow.disputed_count || 0,
+        refunded: escrow.refunded_count || 0,
+        total_held_amount: escrow.total_held_amount || 0,
+        total_fees_collected: escrow.total_fees_collected || 0
+      },
+      platform_fee_percent: platformFeeRow.length > 0 ? platformFeeRow[0].setting_value : '2.50'
     });
 
   } catch (error) {
@@ -488,30 +519,36 @@ router.put('/devices/:id', async (req, res) => {
     if (status && status !== currentDevice.status) {
       const owner = await Database.selectOne('users', 'name, email', 'id = ?', [currentDevice.user_id]);
       const NotificationService = require('../services/NotificationService');
+      const EmailTemplate = require('../services/EmailTemplate');
       
-      let emailSubject, emailContent;
+      let subject, content;
       
       if (status === 'verified') {
-        emailSubject = 'Device Approved - Check It Registry';
-        emailContent = `
-          <h2>Device Approved!</h2>
-          <p>Hello ${owner.name},</p>
-          <p>Your device <strong>${currentDevice.brand} ${currentDevice.model}</strong> has been approved by our admin team.</p>
+        subject = 'Device Approved';
+        content = `
+          <p>Hello <strong>${owner.name}</strong>,</p>
+          <p><strong>Great news!</strong> Your device has been approved by our admin team.</p>
+          <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #166534; font-weight: 600;">${currentDevice.brand} ${currentDevice.model}</p>
+          </div>
           <p>Your device is now fully protected in our registry.</p>
         `;
       } else if (status === 'rejected') {
-        emailSubject = 'Device Registration Rejected - Check It Registry';
-        emailContent = `
-          <h2>Device Registration Update</h2>
-          <p>Hello ${owner.name},</p>
-          <p>Unfortunately, your device <strong>${currentDevice.brand} ${currentDevice.model}</strong> registration has been rejected.</p>
+        subject = 'Device Registration Rejected';
+        content = `
+          <p>Hello <strong>${owner.name}</strong>,</p>
+          <p>Unfortunately, your device registration has been rejected.</p>
+          <div style="background: #FEF2F2; border-left: 4px solid #EF4444; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 0; color: #991B1B; font-weight: 600;">${currentDevice.brand} ${currentDevice.model}</p>
+          </div>
           <p><strong>Reason:</strong> ${admin_notes || 'Please contact support for more information'}</p>
           <p>You can resubmit with additional documentation if needed.</p>
         `;
       }
 
-      if (emailSubject) {
-        await NotificationService.sendEmailDirect(owner.email, emailSubject, emailContent);
+      if (subject) {
+        const fullHtml = EmailTemplate.wrapContent(subject, content);
+        await NotificationService.sendEmailDirect(owner.email, `${subject} - Check It`, fullHtml);
       }
     }
 
