@@ -276,14 +276,14 @@ router.post('/login', async (req, res) => {
       // Create temporary session (not trusted yet)
       const sessionInfo = await DeviceSecurityService.createDeviceSession(user.id, req, false);
 
-      // Send device login notification
+      // Send device login notification (fire-and-forget — don't block login)
       const deviceInfo = DeviceSecurityService.parseUserAgent(req.get('User-Agent'));
-      await DeviceSecurityService.sendDeviceLoginNotification(
+      DeviceSecurityService.sendDeviceLoginNotification(
         user.id, 
         deviceInfo, 
         req.ip, 
         true // New device
-      );
+      ).catch(err => console.error('Login notification error:', err));
 
       return res.status(200).json({
         requires_device_verification: true,
@@ -331,14 +331,14 @@ router.post('/login', async (req, res) => {
       created_at: new Date()
     });
 
-    // Send login notification for trusted device
+    // Send login notification for trusted device (fire-and-forget)
     const deviceInfo = DeviceSecurityService.parseUserAgent(req.get('User-Agent'));
-    await DeviceSecurityService.sendDeviceLoginNotification(
+    DeviceSecurityService.sendDeviceLoginNotification(
       user.id, 
       deviceInfo, 
       req.ip, 
       false // Trusted device
-    );
+    ).catch(err => console.error('Login notification error:', err));
 
     // Return user data (without password)
     const { password_hash, ...userWithoutPassword } = user;
