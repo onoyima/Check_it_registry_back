@@ -10,6 +10,10 @@ yarn.lock
 # Vite build output
 dist/
 .vite/
+*.md
+!/README.md
+*.txt
+*.docx
 
 # TypeScript
 *.tsbuildinfo
