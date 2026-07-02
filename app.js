@@ -10,6 +10,7 @@ const Database = require('./config');
 const BackgroundJobs = require('./services/BackgroundJobs');
 const SystemMonitor = require('./services/SystemMonitorService');
 const { runMigrations } = require('./services/migrations');
+const errorStore = require('./services/ErrorStore');
 
 // Import routes
 const { router: authRoutes } = require('./routes/auth');
@@ -163,16 +164,52 @@ app.post('/api/admin/jobs/run', async (req, res) => {
   }
 });
 
-// 404 handler
+// Landing page — shows errors, blocked IPs, system status
+app.get('/', (req, res) => {
+  res.send(errorStore.renderLandingPage(req));
+});
+
+// Capture 404s as errors
 app.use('*', (req, res) => {
+  const err = new Error(`Endpoint not found: ${req.method} ${req.originalUrl}`);
+  err.status = 404;
+  errorStore.capture(err, req);
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Global error handler
+// IP blocking middleware — blocks IPs that cause repeated errors
+const IP_BLOCK_THRESHOLD = 10;
+const ipFailCount = new Map();
+
+app.use((req, res, next) => {
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  if (ip) {
+    const blocked = errorStore.getBlockedIps().find(b => b.ip === ip);
+    if (blocked) {
+      return res.status(403).json({ error: 'Your IP has been blocked due to repeated errors. Contact support.' });
+    }
+  }
+  next();
+});
+
+// Global error handler — captures all errors for the landing page
 app.use((error, req, res, next) => {
   console.error('Global error handler:', error);
   
-  // Don't leak error details in production
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  
+  // Track IP failures for potential blocking
+  if (ip && error.status >= 400) {
+    const count = (ipFailCount.get(ip) || 0) + 1;
+    ipFailCount.set(ip, count);
+    if (count >= IP_BLOCK_THRESHOLD) {
+      errorStore.blockIp(ip, `Exceeded ${IP_BLOCK_THRESHOLD} error threshold (${count} errors)`);
+      ipFailCount.delete(ip);
+    }
+  }
+  
+  errorStore.capture(error, req);
+  
   const isDevelopment = process.env.NODE_ENV === 'development';
   
   res.status(error.status || 500).json({
