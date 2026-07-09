@@ -1,5 +1,6 @@
 const Database = require('../config');
 const crypto = require('crypto');
+const axios = require('axios');
 
 const ENCRYPTION_ALGORITHM = 'aes-256-cbc';
 const ENCRYPTION_KEY = process.env.KYC_ENCRYPTION_KEY || 'vOVH6sdmpNWjRRIqCc7rdxs01lwBzfr3';
@@ -38,23 +39,39 @@ class NINVerificationService {
     }
 
     const provider = await this.getProvider();
-    const providerService = this.getProviderService(provider);
-    return providerService.verify(nin);
+    const providers = this.getProviderChain(provider);
+
+    let lastError = null;
+    for (const providerInstance of providers) {
+      try {
+        console.log(`NIN Verification: Trying provider ${providerInstance.name}`);
+        const result = await providerInstance.verify(nin);
+        console.log(`NIN Verification: Success via ${providerInstance.name}`);
+        return result;
+      } catch (error) {
+        console.error(`NIN Verification: ${providerInstance.name} failed - ${error.message}`);
+        lastError = error;
+        continue;
+      }
+    }
+
+    throw lastError || new Error('All NIN verification providers failed');
   }
 
-  static getProviderService(provider) {
-    switch (provider) {
-      case 'prembly':
-        return new PremblyProvider();
-      case 'dojah':
-        return new DojahProvider();
-      case 'verifyng':
-        return new VerifyNGProvider();
-      case 'smileid':
-        return new SmileIDProvider();
-      default:
-        return new PremblyProvider();
+  static getProviderChain(preferredProvider) {
+    const allProviders = [
+      new PremblyNINProvider(),
+      new DojahNINProvider(),
+      new VerifyNGNINProvider()
+    ];
+
+    const preferred = allProviders.find(p => p.name === preferredProvider);
+    const others = allProviders.filter(p => p.name !== preferredProvider);
+
+    if (preferred) {
+      return [preferred, ...others];
     }
+    return allProviders;
   }
 
   static async matchIdentity(userId, ninData) {
@@ -78,14 +95,13 @@ class NINVerificationService {
     const matchResult = await this.matchIdentity(userId, ninData);
 
     const verificationId = Database.generateUUID();
-    const encryptedNIN = this.encrypt(nin);
 
     await Database.insert('kyc_verifications', {
       id: verificationId,
       user_id: userId,
-      nin: encryptedNIN,
+      nin: nin,
       nin_status: matchResult.matched ? 'verified' : 'failed',
-      verification_response: JSON.stringify({ ninData, matchResult, provider: await this.getProvider() }),
+      verification_response: JSON.stringify({ ninData, matchResult, provider: ninData.provider }),
       verified_at: matchResult.matched ? new Date() : null,
       created_at: new Date()
     });
@@ -121,12 +137,13 @@ class NINVerificationService {
     await Database.logAudit(userId,
       matchResult.matched ? 'NIN_VERIFIED' : 'NIN_FAILED',
       'kyc_verifications', verificationId,
-      null, { match: matchResult, provider: await this.getProvider() });
+      null, { match: matchResult, provider: ninData.provider });
 
     return {
       success: matchResult.matched,
       verificationId,
       match: matchResult,
+      provider: ninData.provider,
       message: matchResult.matched
         ? 'Identity verified successfully. All your devices are now verified.'
         : 'NIN found but name does not match your account. Please contact support.'
@@ -134,67 +151,144 @@ class NINVerificationService {
   }
 }
 
-class PremblyProvider {
+class PremblyNINProvider {
+  constructor() {
+    this.name = 'prembly';
+    this.baseURL = 'https://api.prembly.com';
+    this.apiKey = process.env.PREMBLY_API_KEY || '';
+  }
+
   async verify(nin) {
-    await new Promise(r => setTimeout(r, 2000));
-    const isValid = nin.startsWith('1') || nin.startsWith('2');
-    if (!isValid) throw new Error('NIN not found in national database');
+    if (!this.apiKey) {
+      throw new Error('Prembly API key not configured (PREMBLY_API_KEY)');
+    }
+
+    const response = await axios.post(
+      `${this.baseURL}/verification/identitypass/nin`,
+      { id_number: nin },
+      {
+        headers: {
+          'x-api-key': this.apiKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    const body = response.data;
+
+    if (!body.status || body.status_code !== '00') {
+      const detail = body.detail || body.message || 'Verification failed';
+      throw new Error(`Prembly NIN verification failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    }
+
+    const data = body.data || body.detail || {};
 
     return {
       provider: 'prembly',
       nin,
-      first_name: 'John',
-      last_name: 'Doe',
-      middle_name: 'K',
-      date_of_birth: '1990-01-01',
-      gender: 'M',
-      photo_url: 'https://ui-avatars.com/api/?name=John+Doe&background=random&size=200',
-      address: '123 Sample Street',
+      first_name: data.first_name || data.FirstName || '',
+      last_name: data.last_name || data.LastName || '',
+      middle_name: data.middle_name || data.MiddleName || '',
+      date_of_birth: data.dob || data.date_of_birth || data.DOB || '',
+      gender: data.gender || data.Gender || '',
+      photo_url: data.photo || data.image || data.Photo || null,
+      address: data.address || data.Address || '',
       verified: true
     };
   }
 }
 
-class DojahProvider {
+class DojahNINProvider {
+  constructor() {
+    this.name = 'dojah';
+    this.baseURL = 'https://api.dojah.io';
+    this.appId = process.env.DOJAH_APP_ID || '';
+    this.apiKey = process.env.DOJAH_API_KEY || '';
+  }
+
   async verify(nin) {
-    await new Promise(r => setTimeout(r, 1500));
-    const isValid = nin.startsWith('1') || nin.startsWith('2');
-    if (!isValid) throw new Error('NIN verification failed via Dojah');
+    if (!this.appId || !this.apiKey) {
+      throw new Error('Dojah credentials not configured (DOJAH_APP_ID, DOJAH_API_KEY)');
+    }
+
+    const response = await axios.post(
+      `${this.baseURL}/api/v1/id/nin`,
+      { nin },
+      {
+        headers: {
+          'Authorization': `${this.appId}:${this.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    const body = response.data;
+
+    if (!body.success && !body.entity) {
+      throw new Error(`Dojah NIN verification failed: ${body.error || body.message || 'Unknown error'}`);
+    }
+
+    const data = body.entity || {};
+
     return {
-      provider: 'dojah', nin,
-      first_name: 'Jane', last_name: 'Smith',
-      date_of_birth: '1988-05-15', gender: 'F',
-      photo_url: null, address: '456 Test Avenue',
+      provider: 'dojah',
+      nin,
+      first_name: data.first_name || data.FirstName || '',
+      last_name: data.last_name || data.LastName || '',
+      middle_name: data.middle_name || data.MiddleName || '',
+      date_of_birth: data.dob || data.date_of_birth || '',
+      gender: data.gender || '',
+      photo_url: data.image_base64 || null,
+      address: data.address || '',
       verified: true
     };
   }
 }
 
-class VerifyNGProvider {
-  async verify(nin) {
-    await new Promise(r => setTimeout(r, 1000));
-    const isValid = nin.startsWith('1') || nin.startsWith('2');
-    if (!isValid) throw new Error('NIN not found via Verify.ng');
-    return {
-      provider: 'verifyng', nin,
-      first_name: 'Alice', last_name: 'Johnson',
-      date_of_birth: '1992-11-20', gender: 'F',
-      photo_url: null, address: '789 Sample Road',
-      verified: true
-    };
+class VerifyNGNINProvider {
+  constructor() {
+    this.name = 'verifyng';
+    this.baseURL = 'https://api.verifyng.com';
+    this.apiKey = process.env.VERIFYNG_API_KEY || '';
   }
-}
 
-class SmileIDProvider {
   async verify(nin) {
-    await new Promise(r => setTimeout(r, 2500));
-    const isValid = nin.startsWith('1') || nin.startsWith('2');
-    if (!isValid) throw new Error('NIN verification failed via SmileID');
+    if (!this.apiKey) {
+      throw new Error('VerifyNG API key not configured (VERIFYNG_API_KEY)');
+    }
+
+    const response = await axios.post(
+      `${this.baseURL}/api/v1/identity/nin`,
+      { id_number: nin },
+      {
+        headers: {
+          'x-api-key': this.apiKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    const body = response.data;
+
+    if (!body.status && !body.success) {
+      throw new Error(`VerifyNG NIN verification failed: ${body.message || body.error || 'Unknown error'}`);
+    }
+
+    const data = body.data || body.entity || {};
+
     return {
-      provider: 'smileid', nin,
-      first_name: 'Bob', last_name: 'Williams',
-      date_of_birth: '1985-03-10', gender: 'M',
-      photo_url: null, address: '321 Test Blvd',
+      provider: 'verifyng',
+      nin,
+      first_name: data.first_name || data.FirstName || '',
+      last_name: data.last_name || data.LastName || '',
+      middle_name: data.middle_name || data.MiddleName || '',
+      date_of_birth: data.dob || data.date_of_birth || '',
+      gender: data.gender || '',
+      photo_url: data.photo || data.image || null,
+      address: data.address || '',
       verified: true
     };
   }
