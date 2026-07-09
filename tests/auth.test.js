@@ -1,6 +1,6 @@
 // Authentication Tests
 const request = require('supertest');
-const app = require('../app');
+const { app } = require('../app');
 const { TestUtils } = require('./setup');
 
 describe('Authentication API', () => {
@@ -165,7 +165,7 @@ describe('Authentication API', () => {
       const response = await request(app)
         .get('/api/auth/me')
         .set('Authorization', 'Bearer invalid-token')
-        .expect(403);
+        .expect(401);
 
       expect(response.body).toHaveProperty('error');
       expect(response.body.error).toContain('Invalid or expired token');

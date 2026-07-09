@@ -5,9 +5,17 @@ const BackgroundJobs = require('../services/BackgroundJobs');
 
 const router = express.Router();
 
-// Get API status and information (public endpoint)
+// Get API status and information (public endpoint, cached 30s)
 router.get('/status', async (req, res) => {
   try {
+    const CacheService = require('../services/CacheService');
+    const cacheKey = 'api:status';
+    let cached = CacheService.get(cacheKey);
+    if (cached) {
+      res.setHeader('Cache-Control', 'public, max-age=30');
+      return res.json(cached);
+    }
+
     const startTime = Date.now();
     
     // Test database connectivity
@@ -30,6 +38,8 @@ router.get('/status', async (req, res) => {
         (SELECT COUNT(*) FROM reports) as total_reports,
         (SELECT COUNT(*) FROM imei_checks) as total_checks
     `).catch(() => [{ total_users: 0, total_devices: 0, total_reports: 0, total_checks: 0 }]);
+
+    CacheService.set(cacheKey, { stats, dbResponseTime, dbStatus, startTime }, 30);
 
     const responseTime = Date.now() - startTime;
 

@@ -6,8 +6,10 @@ const EscrowService = require('../services/EscrowService');
 // GET /api/escrow/buyer-orders — buyer's purchase history with escrow status
 router.get('/buyer-orders', authenticateToken, async (req, res) => {
   try {
-    const orders = await EscrowService.getBuyerOrders(req.user.id);
-    res.json({ data: orders });
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const result = await EscrowService.getBuyerOrders(req.user.id, page, limit);
+    res.json(result);
   } catch (error) {
     console.error('Buyer orders error:', error);
     res.status(500).json({ error: 'Failed to fetch orders' });
@@ -17,8 +19,10 @@ router.get('/buyer-orders', authenticateToken, async (req, res) => {
 // GET /api/escrow/seller-orders — seller's sales with escrow status
 router.get('/seller-orders', authenticateToken, async (req, res) => {
   try {
-    const orders = await EscrowService.getSellerOrders(req.user.id);
-    res.json({ data: orders });
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const result = await EscrowService.getSellerOrders(req.user.id, page, limit);
+    res.json(result);
   } catch (error) {
     console.error('Seller orders error:', error);
     res.status(500).json({ error: 'Failed to fetch orders' });

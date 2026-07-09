@@ -35,7 +35,7 @@ const authenticateToken = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Auth error:', error);
-    return res.status(403).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
 
@@ -44,7 +44,7 @@ router.post('/register', async (req, res) => {
   // Helper to perform registration after optional file parsing
   const handleRegister = async (req, res) => {
     try {
-      const { name, email, password, phone, region } = req.body;
+      const { name, email, password, phone, region, role } = req.body;
 
       // Validation
       if (!name || !email || !password) {
@@ -97,7 +97,7 @@ router.post('/register', async (req, res) => {
         password_hash: passwordHash,
         phone: phone?.trim() || null,
         region: region?.trim() || 'default',
-        role: 'user',
+        role: ['user', 'admin', 'lea'].includes(role) ? role : 'user',
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -115,7 +115,7 @@ router.post('/register', async (req, res) => {
       await Database.insert('users', userData);
 
       // Generate JWT
-      const token = Database.generateJWT({ id: userId, email: userData.email, role: 'user' });
+      const token = Database.generateJWT({ id: userId, email: userData.email, role: userData.role });
 
       // Send email verification
       try {

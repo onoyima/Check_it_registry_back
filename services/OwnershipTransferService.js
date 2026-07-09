@@ -761,8 +761,9 @@ class OwnershipTransferService {
   }
 
   // Get user transfers
-  async getUserTransfers(userId, type = 'all') {
+  async getUserTransfers(userId, type = 'all', page = 1, limit = 20) {
     try {
+      const offset = (page - 1) * limit;
       // Fetch user email to include transfers targeted to this user via buyer_email
       const user = await Database.selectOne('users', 'email', 'id = ?', [userId]);
 
@@ -805,6 +806,11 @@ class OwnershipTransferService {
           }
       }
 
+      const [{ total }] = await Database.query(
+        `SELECT COUNT(*) as total FROM ownership_transfers ot WHERE ${whereClause}`,
+        params
+      );
+
       const transfers = await Database.query(`
         SELECT 
           ot.*,
@@ -823,25 +829,29 @@ class OwnershipTransferService {
         LEFT JOIN users buyer ON ot.to_user_id = buyer.id
         WHERE ${whereClause}
         ORDER BY ot.created_at DESC
-      `, params);
+        LIMIT ? OFFSET ?
+      `, [...params, limit, offset]);
 
-      return transfers.map(transfer => {
-        const isRecipientByUserId = transfer.to_user_id === userId;
-        const isRecipientByEmail = hasEmail && transfer.buyer_email && transfer.buyer_email.toLowerCase() === user.email.toLowerCase();
-        const isSenderByUserId = transfer.from_user_id === userId;
-        const isActiveBuyerSide = transfer.status === 'active' || transfer.status === 'awaiting_buyer_otp';
+      return {
+        transfers: transfers.map(transfer => {
+          const isRecipientByUserId = transfer.to_user_id === userId;
+          const isRecipientByEmail = hasEmail && transfer.buyer_email && transfer.buyer_email.toLowerCase() === user.email.toLowerCase();
+          const isSenderByUserId = transfer.from_user_id === userId;
+          const isActiveBuyerSide = transfer.status === 'active' || transfer.status === 'awaiting_buyer_otp';
 
-        // Hide transfer_code for both buyer and seller while active/awaiting to enforce email-only delivery
-        const shouldHideCode = isActiveBuyerSide && (isRecipientByUserId || isRecipientByEmail || isSenderByUserId);
-        const sanitizedTransferCode = shouldHideCode ? null : transfer.transfer_code;
+          // Hide transfer_code for both buyer and seller while active/awaiting to enforce email-only delivery
+          const shouldHideCode = isActiveBuyerSide && (isRecipientByUserId || isRecipientByEmail || isSenderByUserId);
+          const sanitizedTransferCode = shouldHideCode ? null : transfer.transfer_code;
 
-        return {
-          ...transfer,
-          transfer_code: sanitizedTransferCode,
-          agreement_terms: this.safeJsonParse(transfer.agreement_terms),
-          transfer_location: this.safeJsonParse(transfer.transfer_location)
-        };
-      });
+          return {
+            ...transfer,
+            transfer_code: sanitizedTransferCode,
+            agreement_terms: this.safeJsonParse(transfer.agreement_terms),
+            transfer_location: this.safeJsonParse(transfer.transfer_location)
+          };
+        }),
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+      };
 
     } catch (error) {
       console.error('Get transfers error:', error);

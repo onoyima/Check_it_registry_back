@@ -1,18 +1,23 @@
 // Report Management Routes - MySQL Version
 const express = require('express');
-const Database = require('../config');
-const { authenticateToken } = require('../middleware/auth');
-
 const router = express.Router();
+const Database = require('../config');
+const { authenticateToken, collectAuditContext } = require('../middleware/auth');
+const RevenueService = require('../services/RevenueService');
+const SecurityService = require('../services/SecurityService');
+const FraudDetectionService = require('../services/FraudDetectionService');
 
-// Apply authentication to all routes
 router.use(authenticateToken);
+router.use(collectAuditContext);
 
 // GET /api/report-management - List user's reports
 router.get('/', async (req, res) => {
   try {
     const userId = req.user.id;
     const { status, report_type } = req.query;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
 
     let whereClause = 'r.reporter_id = ?';
     let whereParams = [userId];
@@ -41,9 +46,18 @@ router.get('/', async (req, res) => {
       LEFT JOIN law_enforcement_agencies lea ON r.assigned_lea_id = lea.id
       WHERE ${whereClause}
       ORDER BY r.created_at DESC
-    `, whereParams);
+      LIMIT ? OFFSET ?
+    `, [...whereParams, limit, offset]);
 
-    res.json(reports);
+    const [{ total }] = await Database.query(
+      `SELECT COUNT(*) as total FROM reports r WHERE ${whereClause}`,
+      whereParams
+    );
+
+    res.json({
+      data: reports,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+    });
   } catch (error) {
     console.error('Error fetching reports:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -113,7 +127,7 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Verify device ownership (except for found reports)
+    /* Revenue & Security checks for non-found reports */
     if (report_type !== 'found') {
       const device = await Database.selectOne(
         'devices',
@@ -128,7 +142,6 @@ router.post('/', async (req, res) => {
         });
       }
 
-      // Check if device already has an active report
       const existingReport = await Database.selectOne(
         'reports',
         'id',
@@ -140,6 +153,48 @@ router.post('/', async (req, res) => {
         return res.status(409).json({ 
           error: 'Device already has an active report' 
         });
+      }
+
+      /* Require NIN verification before first report */
+      if (!req.user.is_verified) {
+        return res.status(403).json({
+          error: 'Identity verification required before reporting.',
+          requiresAction: 'nin_verification',
+          message: 'Please complete NIN verification first. A verification fee applies.'
+        });
+      }
+
+      /* Fraud check */
+      const fraudCheck = await FraudDetectionService.checkAndFlag(userId, 'REPORT_DEVICE', {
+        ipAddress: req.clientIp,
+        macAddress: req.macAddress,
+        deviceId
+      });
+      if (fraudCheck.blocked) {
+        return res.status(403).json({ error: 'Reporting blocked due to security concerns. Contact support.' });
+      }
+
+      /* Charge report verification fee after first free report */
+      const reportCount = await RevenueService.getUserReportCount(userId);
+      if (reportCount > 0) {
+        const fee = await RevenueService.getFee('report_verification_fee');
+        if (fee > 0) {
+          const { pay_by_pass } = req.body;
+          if (!pay_by_pass) {
+            const invoiceId = await RevenueService.createPaymentInvoice(
+              userId, fee, 'report_verification',
+              `RPT-${userId}-${Date.now()}`,
+              { device_id, report_type }
+            );
+            return res.json({
+              requiresPayment: true,
+              invoiceId,
+              amount: fee,
+              purpose: 'Report Verification Fee',
+              message: `Payment of ₦${fee} required for this report.`
+            });
+          }
+        }
       }
     }
 
@@ -315,6 +370,26 @@ router.post('/', async (req, res) => {
         }
       }
     });
+
+    // Log critical action
+    await SecurityService.logCriticalAction(userId, 'REPORT_DEVICE', {
+      success: true,
+      deviceId: device_id,
+      reference: reportId,
+      ipAddress: req.clientIp,
+      userAgent: req.userAgent,
+      macAddress: req.macAddress,
+      oldValues: null,
+      newValues: { report_type, case_id: caseId },
+      executionTime: 0
+    });
+
+    // Mark verification fee as paid if applicable
+    if (report_type !== 'found' && req.body.pay_by_pass) {
+      await Database.update('reports',
+        { verification_fee_paid: true, fee_transaction_id: req.body.pay_by_pass },
+        'id = ?', [reportId]);
+    }
 
     // Get the created report with details
     const report = await Database.queryOne(`

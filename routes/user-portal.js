@@ -65,7 +65,7 @@ router.get('/dashboard', async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get user's devices with detailed info
+    // Get user's devices with detailed info (last 10)
     const devices = await Database.query(`
       SELECT 
         d.*,
@@ -84,9 +84,10 @@ router.get('/dashboard', async (req, res) => {
       LEFT JOIN users v ON d.verified_by = v.id
       WHERE d.user_id = ?
       ORDER BY d.created_at DESC
+      LIMIT 10
     `, [userId]);
 
-    // Get user's reports
+    // Get user's reports (last 10)
     const reports = await Database.query(`
       SELECT 
         r.*,
@@ -98,6 +99,7 @@ router.get('/dashboard', async (req, res) => {
       LEFT JOIN law_enforcement_agencies lea ON r.assigned_lea_id = lea.id
       WHERE r.reporter_id = ? OR d.user_id = ?
       ORDER BY r.created_at DESC
+      LIMIT 10
     `, [userId, userId]);
 
     // Get transfer history

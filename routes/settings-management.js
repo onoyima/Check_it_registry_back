@@ -1,16 +1,14 @@
 const express = require('express');
+const Database = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { validateInput, sanitizeInput } = require('../middleware/validation');
-const { logActivity } = require('../services/AuditService');
+const AuditService = require('../services/AuditService');
 const router = express.Router();
 
 // Get user settings and preferences
 router.get('/preferences', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
-
-    // Get user preferences
-    const [userRows] = await connection.execute(`
+    const userRows = await Database.query(`
       SELECT 
         email_notifications,
         sms_notifications,
@@ -36,8 +34,7 @@ router.get('/preferences', authenticateToken, async (req, res) => {
 
     const preferences = userRows[0];
 
-    // Get user's active sessions
-    const [sessions] = await connection.execute(`
+    const sessions = await Database.query(`
       SELECT 
         id,
         ip_address,
@@ -63,7 +60,6 @@ router.get('/preferences', authenticateToken, async (req, res) => {
 // Update notification preferences
 router.put('/notifications', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const {
       email_notifications,
       sms_notifications,
@@ -75,7 +71,7 @@ router.put('/notifications', authenticateToken, async (req, res) => {
       marketing_emails
     } = req.body;
 
-    await connection.execute(`
+    await Database.query(`
       UPDATE users 
       SET 
         email_notifications = ?,
@@ -100,7 +96,7 @@ router.put('/notifications', authenticateToken, async (req, res) => {
       req.user.id
     ]);
 
-    await logActivity(connection, req.user.id, 'notification_preferences_updated', 'user', req.user.id, 
+    await AuditService.logActivity(req, req.user.id, 'notification_preferences_updated', 'user', req.user.id, 
       'User updated notification preferences', req.ip, req.get('User-Agent'));
 
     res.json({ message: 'Notification preferences updated successfully' });
@@ -117,10 +113,9 @@ router.put('/appearance', authenticateToken, [
   validateInput('timezone', { required: false, maxLength: 50 })
 ], async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const { theme_preference, language_preference, timezone } = sanitizeInput(req.body);
 
-    await connection.execute(`
+    await Database.query(`
       UPDATE users 
       SET 
         theme_preference = COALESCE(?, theme_preference),
@@ -130,7 +125,7 @@ router.put('/appearance', authenticateToken, [
       WHERE id = ?
     `, [theme_preference, language_preference, timezone, req.user.id]);
 
-    await logActivity(connection, req.user.id, 'appearance_preferences_updated', 'user', req.user.id, 
+    await AuditService.logActivity(req, req.user.id, 'appearance_preferences_updated', 'user', req.user.id, 
       'User updated appearance preferences', req.ip, req.get('User-Agent'));
 
     res.json({ message: 'Appearance preferences updated successfully' });
@@ -143,7 +138,6 @@ router.put('/appearance', authenticateToken, [
 // Update privacy preferences
 router.put('/privacy', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const {
       profile_visibility,
       show_online_status,
@@ -152,7 +146,7 @@ router.put('/privacy', authenticateToken, async (req, res) => {
       analytics_consent
     } = req.body;
 
-    await connection.execute(`
+    await Database.query(`
       UPDATE users 
       SET 
         profile_visibility = COALESCE(?, profile_visibility),
@@ -171,7 +165,7 @@ router.put('/privacy', authenticateToken, async (req, res) => {
       req.user.id
     ]);
 
-    await logActivity(connection, req.user.id, 'privacy_preferences_updated', 'user', req.user.id, 
+    await AuditService.logActivity(req, req.user.id, 'privacy_preferences_updated', 'user', req.user.id, 
       'User updated privacy preferences', req.ip, req.get('User-Agent'));
 
     res.json({ message: 'Privacy preferences updated successfully' });
@@ -187,10 +181,9 @@ router.put('/security', authenticateToken, [
   validateInput('auto_logout_enabled', { required: false, type: 'boolean' })
 ], async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const { session_timeout, auto_logout_enabled, require_password_change } = req.body;
 
-    await connection.execute(`
+    await Database.query(`
       UPDATE users 
       SET 
         session_timeout = COALESCE(?, session_timeout),
@@ -205,7 +198,7 @@ router.put('/security', authenticateToken, [
       req.user.id
     ]);
 
-    await logActivity(connection, req.user.id, 'security_settings_updated', 'security', req.user.id, 
+    await AuditService.logActivity(req, req.user.id, 'security_settings_updated', 'security', req.user.id, 
       'User updated security settings', req.ip, req.get('User-Agent'));
 
     res.json({ message: 'Security settings updated successfully' });
@@ -218,9 +211,6 @@ router.put('/security', authenticateToken, [
 // Revoke all sessions except current
 router.post('/security/revoke-sessions', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
-
-    // Get current session ID from token or create logic to identify current session
     const currentSessionId = req.session?.id || req.headers['x-session-id'];
 
     let query = 'UPDATE user_sessions SET expires_at = NOW() WHERE user_id = ?';
@@ -231,9 +221,9 @@ router.post('/security/revoke-sessions', authenticateToken, async (req, res) => 
       params.push(currentSessionId);
     }
 
-    const [result] = await connection.execute(query, params);
+    const result = await Database.query(query, params);
 
-    await logActivity(connection, req.user.id, 'sessions_revoked', 'security', req.user.id, 
+    await AuditService.logActivity(req, req.user.id, 'sessions_revoked', 'security', req.user.id, 
       `User revoked ${result.affectedRows} active sessions`, req.ip, req.get('User-Agent'));
 
     res.json({ 
@@ -249,9 +239,7 @@ router.post('/security/revoke-sessions', authenticateToken, async (req, res) => 
 // Get API keys (for advanced users)
 router.get('/api-keys', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
-
-    const [apiKeys] = await connection.execute(`
+    const apiKeys = await Database.query(`
       SELECT 
         id,
         name,
@@ -280,10 +268,8 @@ router.post('/api-keys', authenticateToken, [
   validateInput('expires_in_days', { required: false, type: 'number', min: 1, max: 365 })
 ], async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const { name, permissions, expires_in_days = 90 } = sanitizeInput(req.body);
 
-    // Generate API key
     const crypto = require('crypto');
     const keyPrefix = 'ck_' + crypto.randomBytes(8).toString('hex');
     const keySecret = crypto.randomBytes(32).toString('hex');
@@ -293,7 +279,7 @@ router.post('/api-keys', authenticateToken, [
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + expires_in_days);
 
-    await connection.execute(`
+    await Database.query(`
       INSERT INTO api_keys (
         user_id, name, key_prefix, key_hash, permissions, expires_at, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, NOW())
@@ -306,7 +292,7 @@ router.post('/api-keys', authenticateToken, [
       expiresAt
     ]);
 
-    await logActivity(connection, req.user.id, 'api_key_created', 'security', req.user.id, 
+    await AuditService.logActivity(req, req.user.id, 'api_key_created', 'security', req.user.id, 
       `User created API key: ${name}`, req.ip, req.get('User-Agent'));
 
     res.json({ 
@@ -325,11 +311,9 @@ router.post('/api-keys', authenticateToken, [
 // Revoke API key
 router.delete('/api-keys/:id', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const { id } = req.params;
 
-    // Verify the API key belongs to the user
-    const [keyRows] = await connection.execute(
+    const keyRows = await Database.query(
       'SELECT name FROM api_keys WHERE id = ? AND user_id = ?',
       [id, req.user.id]
     );
@@ -338,12 +322,12 @@ router.delete('/api-keys/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'API key not found' });
     }
 
-    await connection.execute(
+    await Database.query(
       'UPDATE api_keys SET is_active = FALSE, updated_at = NOW() WHERE id = ? AND user_id = ?',
       [id, req.user.id]
     );
 
-    await logActivity(connection, req.user.id, 'api_key_revoked', 'security', id, 
+    await AuditService.logActivity(req, req.user.id, 'api_key_revoked', 'security', id, 
       `User revoked API key: ${keyRows[0].name}`, req.ip, req.get('User-Agent'));
 
     res.json({ message: 'API key revoked successfully' });
@@ -356,9 +340,7 @@ router.delete('/api-keys/:id', authenticateToken, async (req, res) => {
 // Get data export status
 router.get('/data-export/status', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
-
-    const [exports] = await connection.execute(`
+    const exports = await Database.query(`
       SELECT 
         id,
         export_type,
@@ -386,11 +368,9 @@ router.post('/data-export', authenticateToken, [
   validateInput('export_type', { required: true, enum: ['full', 'profile', 'devices', 'reports', 'activity'] })
 ], async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const { export_type } = req.body;
 
-    // Check if user has a pending export
-    const [pendingExports] = await connection.execute(`
+    const pendingExports = await Database.query(`
       SELECT id FROM data_exports 
       WHERE user_id = ? AND status = 'pending'
     `, [req.user.id]);
@@ -399,18 +379,14 @@ router.post('/data-export', authenticateToken, [
       return res.status(400).json({ error: 'You already have a pending data export request' });
     }
 
-    // Create export request
-    const [result] = await connection.execute(`
+    const result = await Database.query(`
       INSERT INTO data_exports (
         user_id, export_type, status, created_at, expires_at
       ) VALUES (?, ?, 'pending', NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY))
     `, [req.user.id, export_type]);
 
-    await logActivity(connection, req.user.id, 'data_export_requested', 'user', result.insertId, 
+    await AuditService.logActivity(req, req.user.id, 'data_export_requested', 'user', result.insertId, 
       `User requested ${export_type} data export`, req.ip, req.get('User-Agent'));
-
-    // Here you would typically queue a background job to process the export
-    // For now, we'll just return the request ID
 
     res.json({ 
       message: 'Data export request submitted successfully',
@@ -426,10 +402,9 @@ router.post('/data-export', authenticateToken, [
 // Download data export
 router.get('/data-export/:id/download', authenticateToken, async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const { id } = req.params;
 
-    const [exports] = await connection.execute(`
+    const exports = await Database.query(`
       SELECT file_path, export_type, status, expires_at
       FROM data_exports 
       WHERE id = ? AND user_id = ?
@@ -449,15 +424,13 @@ router.get('/data-export/:id/download', authenticateToken, async (req, res) => {
       return res.status(410).json({ error: 'Export has expired' });
     }
 
-    // In a real implementation, you would serve the file from storage
-    // For now, we'll return a placeholder response
     res.json({
       message: 'Export download would start here',
       export_type: exportData.export_type,
       file_path: exportData.file_path
     });
 
-    await logActivity(connection, req.user.id, 'data_export_downloaded', 'user', id, 
+    await AuditService.logActivity(req, req.user.id, 'data_export_downloaded', 'user', id, 
       `User downloaded ${exportData.export_type} data export`, req.ip, req.get('User-Agent'));
 
   } catch (error) {
@@ -469,15 +442,12 @@ router.get('/data-export/:id/download', authenticateToken, async (req, res) => {
 // System settings (admin only)
 router.get('/system', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
-    const connection = req.app.get('db');
-
-    const [settings] = await connection.execute(`
+    const settings = await Database.query(`
       SELECT setting_key, setting_value, description, category
       FROM system_settings 
       ORDER BY category, setting_key
     `);
 
-    // Group settings by category
     const groupedSettings = settings.reduce((acc, setting) => {
       if (!acc[setting.category]) {
         acc[setting.category] = [];
@@ -500,34 +470,24 @@ router.get('/system', authenticateToken, requireRole(['admin']), async (req, res
 // Update system settings (admin only)
 router.put('/system', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
-    const connection = req.app.get('db');
     const { settings } = req.body;
 
     if (!settings || typeof settings !== 'object') {
       return res.status(400).json({ error: 'Invalid settings format' });
     }
 
-    await connection.beginTransaction();
-
-    try {
-      for (const [key, value] of Object.entries(settings)) {
-        await connection.execute(`
-          UPDATE system_settings 
-          SET setting_value = ?, updated_at = NOW()
-          WHERE setting_key = ?
-        `, [String(value), key]);
-      }
-
-      await connection.commit();
-
-      await logActivity(connection, req.user.id, 'system_settings_updated', 'system', null, 
-        `Admin updated system settings: ${Object.keys(settings).join(', ')}`, req.ip, req.get('User-Agent'));
-
-      res.json({ message: 'System settings updated successfully' });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
+    for (const [key, value] of Object.entries(settings)) {
+      await Database.query(`
+        UPDATE system_settings 
+        SET setting_value = ?, updated_at = NOW()
+        WHERE setting_key = ?
+      `, [String(value), key]);
     }
+
+    await AuditService.logActivity(req, req.user.id, 'system_settings_updated', 'system', null, 
+      `Admin updated system settings: ${Object.keys(settings).join(', ')}`, req.ip, req.get('User-Agent'));
+
+    res.json({ message: 'System settings updated successfully' });
   } catch (error) {
     console.error('Error updating system settings:', error);
     res.status(500).json({ error: 'Failed to update system settings' });

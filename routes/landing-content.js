@@ -37,26 +37,32 @@ router.post('/setup', authenticateToken, requireAdmin, async (req, res) => {
     }
 });
 
-// GET / - Public fetch of landing content
+// GET / - Public fetch of landing content (cached for 5 minutes)
 router.get('/', async (req, res) => {
     try {
-        const content = await Database.query(`
-            SELECT * FROM landing_content 
-            WHERE active = TRUE 
-            ORDER BY display_order ASC, created_at DESC
-        `);
-        
-        const team = content.filter(c => c.type === 'team');
-        const testimonials = content.filter(c => c.type === 'testimonial');
-        
-        res.json({ team, testimonials });
+        const CacheService = require('../services/CacheService');
+        const cacheKey = CacheService.constructor.key('landing', 'content');
+        let data = CacheService.get(cacheKey);
+
+        if (!data) {
+            const content = await Database.query(`
+                SELECT * FROM landing_content 
+                WHERE active = TRUE 
+                ORDER BY display_order ASC, created_at DESC
+            `);
+            
+            data = {
+                team: content.filter(c => c.type === 'team'),
+                testimonials: content.filter(c => c.type === 'testimonial')
+            };
+            CacheService.set(cacheKey, data, 300);
+        }
+
+        res.setHeader('Cache-Control', 'public, max-age=60');
+        res.json(data);
     } catch (error) {
         console.error('Fetch landing content error:', error);
-        // Return defaults if DB is empty or error
-        res.json({
-            team: [],
-            testimonials: []
-        });
+        res.json({ team: [], testimonials: [] });
     }
 });
 

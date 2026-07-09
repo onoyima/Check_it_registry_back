@@ -1,6 +1,10 @@
 // Test Setup and Configuration
 const Database = require('../config');
 
+// Database pool is managed as a module singleton — it stays open for the
+// lifetime of the Node.js process across all test files. Jest's --forceExit
+// handles the final cleanup.
+
 // Test database configuration
 const testDbConfig = {
   host: process.env.TEST_DB_HOST || 'localhost',
@@ -33,6 +37,14 @@ class TestUtils {
   static async cleanupTestDatabase() {
     // Clean up test data
     const tables = [
+      'email_verification_tokens',
+      'api_keys',
+      'data_exports',
+      'user_sessions',
+      'business_onboardings',
+      'kyc_verifications',
+      'payment_invoices',
+      'device_check_logs',
       'imei_checks',
       'notifications',
       'audit_logs',
@@ -53,10 +65,11 @@ class TestUtils {
   }
 
   static async createTestUser(userData = {}) {
+    const uniqueSuffix = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     const defaultUser = {
       id: Database.generateUUID(),
       name: 'Test User',
-      email: 'test@example.com',
+      email: `test-${uniqueSuffix}@example.com`,
       password_hash: await Database.hashPassword('password123'),
       role: 'user',
       region: 'test-region',
@@ -77,8 +90,8 @@ class TestUtils {
     const defaultDevice = {
       id: Database.generateUUID(),
       user_id: userId,
-      imei: '123456789012345',
-      serial: 'TEST123456',
+      imei: '1234567890' + String(Date.now()).slice(-5),
+      serial: 'TEST' + String(Date.now()).slice(-6),
       brand: 'TestBrand',
       model: 'TestModel',
       color: 'Black',

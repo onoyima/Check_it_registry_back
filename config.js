@@ -13,8 +13,13 @@ const dbConfig = {
   charset: 'utf8mb4',
   timezone: '+00:00',
   // Connection pool settings
-  connectionLimit: 10,
-  queueLimit: 0
+  connectionLimit: parseInt(process.env.DB_POOL_SIZE) || 20,
+  queueLimit: 0,
+  waitForConnections: true,
+  connectTimeout: 10000,
+  idleTimeout: 30000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0
 };
 
 // Create connection pool

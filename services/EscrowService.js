@@ -240,7 +240,8 @@ class EscrowService {
     return rows[0];
   }
 
-  static async getBuyerOrders(userId) {
+  static async getBuyerOrders(userId, page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
     const sql = `
       SELECT e.id as escrow_id, e.amount, e.status as escrow_status,
              e.platform_fee_percent, e.platform_fee_amount, e.seller_amount,
@@ -257,15 +258,24 @@ class EscrowService {
       LEFT JOIN delivery_confirmations dc ON dc.escrow_id = e.id
       WHERE e.buyer_id = ?
       ORDER BY e.created_at DESC
+      LIMIT ? OFFSET ?
     `;
-    const rows = await Database.query(sql, [userId]);
-    return rows.map(r => ({
-      ...r,
-      images: typeof r.images === 'string' ? JSON.parse(r.images) : (r.images || []),
-    }));
+    const rows = await Database.query(sql, [userId, limit, offset]);
+    const [{ total }] = await Database.query(
+      `SELECT COUNT(*) as total FROM escrow_transactions WHERE buyer_id = ?`,
+      [userId]
+    );
+    return {
+      data: rows.map(r => ({
+        ...r,
+        images: typeof r.images === 'string' ? JSON.parse(r.images) : (r.images || []),
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+    };
   }
 
-  static async getSellerOrders(userId) {
+  static async getSellerOrders(userId, page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
     const sql = `
       SELECT e.id as escrow_id, e.amount, e.status as escrow_status,
              e.platform_fee_percent, e.platform_fee_amount, e.seller_amount,
@@ -282,12 +292,20 @@ class EscrowService {
       LEFT JOIN delivery_confirmations dc ON dc.escrow_id = e.id
       WHERE e.seller_id = ?
       ORDER BY e.created_at DESC
+      LIMIT ? OFFSET ?
     `;
-    const rows = await Database.query(sql, [userId]);
-    return rows.map(r => ({
-      ...r,
-      images: typeof r.images === 'string' ? JSON.parse(r.images) : (r.images || []),
-    }));
+    const rows = await Database.query(sql, [userId, limit, offset]);
+    const [{ total }] = await Database.query(
+      `SELECT COUNT(*) as total FROM escrow_transactions WHERE seller_id = ?`,
+      [userId]
+    );
+    return {
+      data: rows.map(r => ({
+        ...r,
+        images: typeof r.images === 'string' ? JSON.parse(r.images) : (r.images || []),
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+    };
   }
 
   static async updatePlatformFeePercent(adminId, percent) {

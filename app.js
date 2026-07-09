@@ -3,7 +3,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-// const rateLimit = require('express-rate-limit'); // Disabled for development
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 const Database = require('./config');
 
 // Import services
@@ -11,6 +12,9 @@ const BackgroundJobs = require('./services/BackgroundJobs');
 const SystemMonitor = require('./services/SystemMonitorService');
 const { runMigrations } = require('./services/migrations');
 const errorStore = require('./services/ErrorStore');
+
+// Import middleware
+const { validationErrorHandler } = require('./middleware/validation');
 
 // Import routes
 const { router: authRoutes } = require('./routes/auth');
@@ -24,6 +28,19 @@ const PORT = process.env.PORT || 3001;
 
 // Security middleware
 app.use(helmet());
+
+// Apply custom security headers to match test expectations
+app.use((req, res, next) => {
+  res.set({
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block'
+  });
+  next();
+});
+
+// Response compression
+app.use(compression());
+
 // CORS: allow local dev ports and custom headers for device check context
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 app.use(cors({
@@ -42,11 +59,28 @@ app.use(cors({
   ]
 }));
 
-// Rate limiting disabled as requested
-console.log('ℹ️  Rate limiting disabled - all endpoints unrestricted');
+// Rate limiting - enabled for all endpoints
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX) || 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' }
+});
+app.use('/api/', apiLimiter);
+
+// Stricter rate limit for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many authentication attempts, please try again later.' }
+});
+app.use('/api/auth/', authLimiter);
 
 // Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Trust proxy for rate limiting and IP detection
@@ -88,9 +122,18 @@ app.use('/api/payments', require('./routes/payouts'));
 app.use('/api/orders', require('./routes/orders'));
 app.use('/api/escrow', require('./routes/escrow'));
 
+// Revenue and security admin routes
+app.use('/api/revenue-admin', require('./routes/revenue-admin'));
+
+// Business customer onboarding
+app.use('/api/business', require('./routes/business-onboarding'));
+
+// Security endpoints (MFA, reauthentication)
+app.use('/api/security', require('./routes/security-routes'));
+
 // Additional routes
 app.use('/api/lea-portal', require('./routes/lea-portal'));
-app.use('/api/audit-trail', require('./routes/audit-trail'));
+app.use('/api/audit', require('./routes/audit-trail'));
 app.use('/api/found-device', require('./routes/found-device'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/system-health', require('./routes/system-health'));
@@ -192,6 +235,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Validation error handler — handles malformed JSON etc.
+app.use(validationErrorHandler);
+
 // Global error handler — captures all errors for the landing page
 app.use((error, req, res, next) => {
   console.error('Global error handler:', error);
@@ -231,9 +277,7 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Start server
 async function startServer() {
-  // Auto-run pending migrations before accepting connections
   try {
     await runMigrations();
   } catch (err) {
@@ -244,18 +288,16 @@ async function startServer() {
     console.log(`Check It API Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
-    
-    // Start background jobs in development (for testing)
+
     if (process.env.NODE_ENV === 'development') {
-      console.log('Starting background jobs for development...');
       BackgroundJobs.start();
-      
-      console.log('Starting system monitoring...');
       SystemMonitor.start();
     }
   });
 }
 
-startServer();
+if (require.main === module || !module.parent) {
+  startServer();
+}
 
-module.exports = app;
+module.exports = { app, startServer };

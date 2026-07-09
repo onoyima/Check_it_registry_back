@@ -474,6 +474,15 @@ router.get("/requests", async (req, res) => {
       params.push(status);
     }
 
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
+
+    const [{ total }] = await Database.query(
+      `SELECT COUNT(*) as total FROM device_transfers dt WHERE ${whereClause}`,
+      params
+    );
+
     const transfers = await Database.query(
       `
       SELECT 
@@ -493,11 +502,13 @@ router.get("/requests", async (req, res) => {
       JOIN users to_user ON dt.to_user_id = to_user.id
       WHERE ${whereClause}
       ORDER BY dt.created_at DESC
+      LIMIT ? OFFSET ?
     `,
-      params
+      [...params, limit, offset]
     );
 
     res.json({
+      pagination: { page, limit, total: total || 0, totalPages: total ? Math.ceil(total / limit) : 0 },
       transfers: transfers.map((transfer) => ({
         ...transfer,
         is_sender: transfer.from_user_id === userId,
@@ -896,12 +907,14 @@ router.post('/resend-code', authenticateToken, async (req, res) => {
 router.get('/my-transfers', authenticateToken, async (req, res) => {
   try {
     const { type = 'all' } = req.query;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
 
     const OwnershipTransferService = require('../services/OwnershipTransferService');
     
-    const transfers = await OwnershipTransferService.getUserTransfers(req.user.id, type);
+    const result = await OwnershipTransferService.getUserTransfers(req.user.id, type, page, limit);
 
-    res.json({ transfers });
+    res.json(result);
 
   } catch (error) {
     console.error('Get transfers error:', error);

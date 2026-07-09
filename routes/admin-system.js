@@ -976,6 +976,10 @@ router.post('/security-report', async (req, res) => {
     
     whereClause += ` ${timeFilter}`;
     
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit) || 100));
+    const offset = (page - 1) * limit;
+
     const reportData = await Database.query(`
       SELECT 
         se.*,
@@ -985,7 +989,13 @@ router.post('/security-report', async (req, res) => {
       LEFT JOIN users u ON se.user_id = u.id
       WHERE ${whereClause}
       ORDER BY se.created_at DESC
-    `, params);
+      LIMIT ? OFFSET ?
+    `, [...params, limit, offset]);
+
+    const [{ total }] = await Database.query(
+      `SELECT COUNT(*) as total FROM security_events se WHERE ${whereClause}`,
+      params
+    );
     
     // In a real implementation, you would generate a PDF here
     // For now, return JSON data
@@ -994,7 +1004,8 @@ router.post('/security-report', async (req, res) => {
       report_data: reportData,
       generated_at: new Date().toISOString(),
       filters: { timeRange, severity, eventType },
-      total_events: reportData.length
+      total_events: total,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
     });
     
   } catch (error) {

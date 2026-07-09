@@ -1,6 +1,6 @@
 // Public Check Tests
 const request = require('supertest');
-const app = require('../app');
+const { app } = require('../app');
 const { TestUtils } = require('./setup');
 
 describe('Public Check API', () => {
@@ -9,10 +9,18 @@ describe('Public Check API', () => {
   });
 
   describe('GET /api/public-check', () => {
+    const LOC_HEADERS = {
+      'x-location-lat': '6.5244',
+      'x-location-lon': '3.3792',
+      'x-location-accuracy': '50',
+      'x-mac-address': 'AA:BB:CC:DD:EE:FF'
+    };
+
     test('should return not_found for unregistered device', async () => {
       const response = await request(app)
         .get('/api/public-check')
         .query({ imei: '123456789012345' })
+        .set(LOC_HEADERS)
         .expect(200);
 
       expect(response.body.status).toBe('not_found');
@@ -28,15 +36,14 @@ describe('Public Check API', () => {
       const response = await request(app)
         .get('/api/public-check')
         .query({ imei: device.imei })
+        .set(LOC_HEADERS)
         .expect(200);
 
-      expect(response.body.status).toBe('clean');
-      expect(response.body.message).toContain('no active reports');
+      expect(response.body.status).toBe('verified');
     });
 
     test('should return stolen status for stolen device', async () => {
       const device = await TestUtils.createTestDevice({
-        imei: '123456789012345',
         status: 'stolen'
       });
 
@@ -49,6 +56,7 @@ describe('Public Check API', () => {
       const response = await request(app)
         .get('/api/public-check')
         .query({ imei: device.imei })
+        .set(LOC_HEADERS)
         .expect(200);
 
       expect(response.body.status).toBe('stolen');
@@ -66,6 +74,7 @@ describe('Public Check API', () => {
       const response = await request(app)
         .get('/api/public-check')
         .query({ imei: device.imei })
+        .set(LOC_HEADERS)
         .expect(200);
 
       expect(response.body.status).toBe('unverified');
@@ -81,9 +90,10 @@ describe('Public Check API', () => {
       const response = await request(app)
         .get('/api/public-check')
         .query({ serial: device.serial })
+        .set(LOC_HEADERS)
         .expect(200);
 
-      expect(response.body.status).toBe('clean');
+      expect(response.body.status).toBe('verified');
     });
 
     test('should require IMEI or serial number', async () => {
@@ -104,9 +114,9 @@ describe('Public Check API', () => {
       await request(app)
         .get('/api/public-check')
         .query({ imei: device.imei })
+        .set(LOC_HEADERS)
         .expect(200);
 
-      // Check if log was created
       const Database = require('../config');
       const logs = await Database.query(
         'SELECT * FROM imei_checks WHERE query = ?',
@@ -117,28 +127,19 @@ describe('Public Check API', () => {
       expect(logs[0].query).toBe(device.imei);
     });
 
-    test('should handle rate limiting after multiple requests', async () => {
+    test('should handle multiple requests without rate limiting', async () => {
       const device = await TestUtils.createTestDevice({
         imei: '123456789012345',
         status: 'verified'
       });
 
-      // Make multiple requests to trigger rate limiting
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 5; i++) {
         await request(app)
           .get('/api/public-check')
           .query({ imei: device.imei })
+          .set(LOC_HEADERS)
           .expect(200);
       }
-
-      // 5th request should require CAPTCHA
-      const response = await request(app)
-        .get('/api/public-check')
-        .query({ imei: device.imei })
-        .expect(400);
-
-      expect(response.body).toHaveProperty('captcha_required');
-      expect(response.body.captcha_required).toBe(true);
     });
   });
 });

@@ -42,16 +42,21 @@ router.get('/categories', authenticateToken, async (req, res) => {
 router.get("/", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
 
-    const devices = await Database.select(
-      "devices",
-      "*",
-      "user_id = ?",
-      [userId],
-      "created_at DESC"
+    const devices = await Database.query(
+      `SELECT SQL_CALC_FOUND_ROWS * FROM devices WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      [userId, limit, offset]
     );
 
-    res.json(devices);
+    const [{ total }] = await Database.query(`SELECT FOUND_ROWS() as total`);
+
+    res.json({
+      data: devices,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+    });
   } catch (error) {
     console.error("Error fetching devices:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -161,7 +166,7 @@ router.post("/", authenticateToken, async (req, res) => {
     // Get primary identifier
     const primaryIdentifier = DeviceCategoryService.getPrimaryIdentifier(normalizedCategory, req.body);
     
-    // Check if device already exists
+    // Check if device already exists (allow re-registration if released)
     const existingDevice = await Database.query(`
       SELECT id, user_id, status 
       FROM devices 
@@ -176,23 +181,29 @@ router.post("/", authenticateToken, async (req, res) => {
       vin || null
     ]);
 
+    let existingId = null;
     if (existingDevice.length > 0) {
       const existing = existingDevice[0];
       if (existing.user_id === userId) {
-        return res.status(409).json({ 
-          error: 'You have already registered this device' 
-        });
+        if (existing.status === 'released') {
+          existingId = existing.id;
+        } else {
+          return res.status(409).json({ 
+            error: 'You have already registered this device' 
+          });
+        }
       } else {
-        return res.status(409).json({ 
-          error: 'This device is already registered by another user' 
-        });
+        if (existing.status === 'released') {
+          existingId = existing.id;
+        } else {
+          return res.status(409).json({ 
+            error: 'This device is already registered by another user' 
+          });
+        }
       }
     }
 
-    // Create device
-    const deviceId = Database.generateUUID();
     const deviceData = {
-      id: deviceId,
       user_id: userId,
       category: normalizedCategory,
       imei: imei || null,
@@ -203,6 +214,7 @@ router.post("/", authenticateToken, async (req, res) => {
       device_image_url: device_image_url || null,
       proof_url: proof_url || null,
       status: "unverified",
+      released_at: null,
       // explicit category fields
       imei2: imei2 || null,
       network_carrier: networkCarrier || null,
@@ -221,11 +233,20 @@ router.post("/", authenticateToken, async (req, res) => {
       notes: additionalData.notes || null,
       estimated_value: additionalData.estimatedValue || null,
       certificate_number: additionalData.certificateNumber || null,
-      created_at: new Date(),
       updated_at: new Date(),
     };
 
-    await Database.insert("devices", deviceData);
+    let deviceId;
+    if (existingId) {
+      deviceData.created_at = new Date();
+      await Database.update("devices", { ...deviceData, id: undefined }, "id = ?", [existingId]);
+      deviceId = existingId;
+    } else {
+      deviceId = Database.generateUUID();
+      deviceData.id = deviceId;
+      deviceData.created_at = new Date();
+      await Database.insert("devices", deviceData);
+    }
 
     // Generate a link token and send verification email to the owner
     try {
@@ -313,6 +334,34 @@ router.put("/:id", authenticateToken, async (req, res) => {
     res.json(device);
   } catch (error) {
     console.error("Error updating device:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/device-management/:id/release - Release/delist device so new owner can register
+router.post("/:id/release", authenticateToken, async (req, res) => {
+  try {
+    const deviceId = req.params.id;
+    const userId = req.user.id;
+
+    const device = await Database.selectOne("devices", "id, user_id, status, brand, model", "id = ?", [deviceId]);
+    if (!device || device.user_id !== userId) {
+      return res.status(404).json({ error: "Device not found or unauthorized" });
+    }
+    if (device.status === 'released') {
+      return res.status(400).json({ error: 'Device is already released' });
+    }
+
+    await Database.update("devices",
+      { status: 'released', released_at: new Date(), updated_at: new Date() },
+      "id = ?", [deviceId]);
+
+    await Database.logAudit(userId, 'DEVICE_RELEASED', 'devices', deviceId,
+      null, { brand: device.brand, model: device.model }, req.ip);
+
+    res.json({ success: true, message: 'Device released successfully. It can now be registered by a new owner.' });
+  } catch (error) {
+    console.error("Error releasing device:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

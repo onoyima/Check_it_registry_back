@@ -160,12 +160,15 @@ router.put('/profile', authenticateToken, async (req, res) => {
     res.json({ message: 'Profile updated successfully' });
   } catch (error) {
     console.error('Error updating profile:', error);
+    if (error.details) {
+      return res.status(400).json({ error: 'Validation failed', details: error.details });
+    }
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
 
 // Upload profile image
-router.post('/profile/image', authenticateToken, upload.single('image'), async (req, res) => {
+router.post('/image', authenticateToken, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
@@ -209,7 +212,7 @@ router.post('/profile/image', authenticateToken, upload.single('image'), async (
 });
 
 // Update notification preferences
-router.put('/profile/notifications', authenticateToken, async (req, res) => {
+router.put('/notifications', authenticateToken, async (req, res) => {
   try {
     const {
       email_notifications,
@@ -250,7 +253,7 @@ router.put('/profile/notifications', authenticateToken, async (req, res) => {
 });
 
 // Change password
-router.put('/profile/password', authenticateToken, async (req, res) => {
+router.put('/password', authenticateToken, async (req, res) => {
   try {
     // Validate input
     validatePasswordChange(req.body);
@@ -293,7 +296,7 @@ router.put('/profile/password', authenticateToken, async (req, res) => {
 });
 
 // Enable/disable two-factor authentication
-router.put('/profile/2fa', authenticateToken, async (req, res) => {
+router.put('/2fa', authenticateToken, async (req, res) => {
   try {
     const { enabled } = req.body;
 
@@ -317,7 +320,7 @@ router.put('/profile/2fa', authenticateToken, async (req, res) => {
 });
 
 // Get user activity log
-router.get('/profile/activity', authenticateToken, async (req, res) => {
+router.get('/activity', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -414,7 +417,7 @@ router.delete('/profile', authenticateToken, async (req, res) => {
 });
 
 // Export user data (GDPR compliance)
-router.get('/profile/export', authenticateToken, async (req, res) => {
+router.get('/export', authenticateToken, async (req, res) => {
   try {
     // Get user data
     const userData = await Database.selectOne(
@@ -464,7 +467,7 @@ router.get('/profile/export', authenticateToken, async (req, res) => {
 });
 
 // Update user preferences (theme, language, etc.)
-router.put('/profile/preferences', authenticateToken, async (req, res) => {
+router.put('/preferences', authenticateToken, async (req, res) => {
   try {
     const { theme_preference, language_preference, timezone } = req.body;
 
@@ -487,7 +490,7 @@ router.put('/profile/preferences', authenticateToken, async (req, res) => {
 });
 
 // Get user's recent devices
-router.get('/profile/recent-devices', authenticateToken, async (req, res) => {
+router.get('/recent-devices', authenticateToken, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 5;
 
@@ -507,7 +510,7 @@ router.get('/profile/recent-devices', authenticateToken, async (req, res) => {
 });
 
 // Get user's recent reports
-router.get('/profile/recent-reports', authenticateToken, async (req, res) => {
+router.get('/recent-reports', authenticateToken, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 5;
 
@@ -528,7 +531,7 @@ router.get('/profile/recent-reports', authenticateToken, async (req, res) => {
 });
 
 // Update user's privacy settings
-router.put('/profile/privacy', authenticateToken, async (req, res) => {
+router.put('/privacy', authenticateToken, async (req, res) => {
   try {
     const {
       profile_visibility,

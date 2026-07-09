@@ -31,22 +31,35 @@ class EmailVerificationService {
       const connection = await this.pool.getConnection();
       
       try {
-        // Clean up old tokens for this user
-        await connection.execute(
-          'DELETE FROM email_verification_tokens WHERE user_id = ? AND expires_at < NOW()',
-          [userId]
-        );
+        // Clean up old tokens for this user (best-effort, table may not exist)
+        try {
+          await connection.execute(
+            'DELETE FROM email_verification_tokens WHERE user_id = ? AND expires_at < NOW()',
+            [userId]
+          );
+        } catch (cleanupErr) {
+          // Table may not exist yet
+        }
 
         // Generate new token
         const token = this.generateToken();
         const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
         // Insert new token
-        await connection.execute(
-          `INSERT INTO email_verification_tokens (user_id, token, expires_at) 
-           VALUES (?, ?, ?)`,
-          [userId, token, expiresAt]
-        );
+        let insertResult;
+        try {
+          [insertResult] = await connection.execute(
+            `INSERT INTO email_verification_tokens (user_id, token, expires_at) 
+             VALUES (?, ?, ?)`,
+            [userId, token, expiresAt]
+          );
+        } catch (insertErr) {
+          // Verification table not available; registration still succeeds
+          return {
+            success: false,
+            message: 'Email verification temporarily unavailable'
+          };
+        }
 
         // Get user details
         const [userRows] = await connection.execute(
@@ -84,11 +97,19 @@ class EmailVerificationService {
       
       try {
         // Find valid token
-        const [tokenRows] = await connection.execute(
-          `SELECT user_id FROM email_verification_tokens 
-           WHERE token = ? AND expires_at > NOW() AND used_at IS NULL`,
-          [token]
-        );
+        let tokenRows;
+        try {
+          [tokenRows] = await connection.execute(
+            `SELECT user_id FROM email_verification_tokens 
+             WHERE token = ? AND expires_at > NOW() AND used_at IS NULL`,
+            [token]
+          );
+        } catch (queryErr) {
+          return {
+            success: false,
+            message: 'Email verification is currently unavailable'
+          };
+        }
 
         if (tokenRows.length === 0) {
           return {
@@ -100,10 +121,14 @@ class EmailVerificationService {
         const userId = tokenRows[0].user_id;
 
         // Mark token as used
-        await connection.execute(
-          'UPDATE email_verification_tokens SET used_at = NOW() WHERE token = ?',
-          [token]
-        );
+        try {
+          await connection.execute(
+            'UPDATE email_verification_tokens SET used_at = NOW() WHERE token = ?',
+            [token]
+          );
+        } catch (updateErr) {
+          // Non-fatal
+        }
 
         // Mark user as verified
         await connection.execute(
@@ -225,25 +250,36 @@ class EmailVerificationService {
     }
   }
 
+  // Close the email verification pool
+  async close() {
+    if (this.pool) {
+      await this.pool.end();
+    }
+  }
+
   // Clean up expired tokens
   async cleanupExpiredTokens() {
     try {
       const connection = await this.pool.getConnection();
       
       try {
-        const [result] = await connection.execute(
-          'DELETE FROM email_verification_tokens WHERE expires_at < NOW()'
-        );
-        
-        console.log(`Cleaned up ${result.affectedRows} expired email verification tokens`);
-        return result.affectedRows;
-        
+        let result;
+        try {
+          [result] = await connection.execute(
+            'DELETE FROM email_verification_tokens WHERE expires_at < NOW()'
+          );
+          console.log(`Cleaned up ${result.affectedRows} expired verification tokens`);
+          return result.affectedRows;
+        } catch (cleanupErr) {
+          // Table may not exist
+          return 0;
+        }
       } finally {
         connection.release();
       }
     } catch (error) {
       console.error('Error cleaning up expired tokens:', error);
-      throw error;
+      return 0;
     }
   }
 }

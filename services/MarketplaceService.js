@@ -545,7 +545,8 @@ class MarketplaceService {
      };
   }
 
-  static async getSellerOrders(userId) {
+  static async getSellerOrders(userId, page = 1, limit = 20) {
+      const offset = (page - 1) * limit;
       const sql = `
         SELECT l.*, d.brand, d.model, d.category, b.name as buyer_name, b.email as buyer_email,
                e.id as escrow_id, e.status as escrow_status, e.amount as escrow_amount,
@@ -558,12 +559,20 @@ class MarketplaceService {
         LEFT JOIN delivery_confirmations dc ON dc.escrow_id = e.id
         WHERE l.seller_id = ? AND l.buyer_id IS NOT NULL
         ORDER BY l.sold_at DESC
+        LIMIT ? OFFSET ?
       `;
-      const orders = await Database.query(sql, [userId]);
-      return orders.map(o => ({
-          ...o,
-          images: typeof o.images === 'string' ? JSON.parse(o.images) : o.images
-      }));
+      const orders = await Database.query(sql, [userId, limit, offset]);
+      const [{ total }] = await Database.query(
+        `SELECT COUNT(*) as total FROM marketplace_listings WHERE seller_id = ? AND buyer_id IS NOT NULL`,
+        [userId]
+      );
+      return {
+        data: orders.map(o => ({
+            ...o,
+            images: typeof o.images === 'string' ? JSON.parse(o.images) : o.images
+        })),
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+      };
   }
 }
 

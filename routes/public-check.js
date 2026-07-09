@@ -2,6 +2,8 @@
 const express = require('express');
 const Database = require('../config');
 const notifier = require('../services/EnhancedNotificationService');
+const RevenueService = require('../services/RevenueService');
+const FraudDetectionService = require('../services/FraudDetectionService');
 
 const router = express.Router();
 
@@ -132,7 +134,16 @@ router.get('/', noRestrictions, async (req, res) => {
         }
       };
 
-      if (device.status === 'stolen' || device.status === 'lost') {
+      if (device.status === 'released') {
+        result = {
+          status: 'released',
+          message: 'This device was released by its previous owner and is available for registration by a new owner.',
+          device_details: {
+            brand: device.brand,
+            model: device.model
+          }
+        };
+      } else if (device.status === 'stolen' || device.status === 'lost') {
         // Get active report
         const report = await Database.selectOne(
           'reports',
@@ -175,25 +186,27 @@ router.get('/', noRestrictions, async (req, res) => {
       : (device.status === 'stolen' || device.status === 'lost' ? 'stolen'
         : (device.status === 'verified' ? 'legitimate' : 'unknown'));
 
-    const checkId = Database.generateUUID();
-    await Database.insert('device_check_logs', {
-      id: checkId,
-      device_id: device ? device.id : null,
-      checker_user_id: null,
-      check_type: 'public_check',
-      ip_address: clientIP,
-      mac_address: macAddress,
-      user_agent: userAgent,
-      latitude: locationLatitude,
-      longitude: locationLongitude,
-      location_accuracy: locationAccuracy,
-      device_fingerprint: JSON.stringify({}),
-      risk_score: 0,
-      suspicious_flags: JSON.stringify([]),
-      check_result: checkResultEnum,
-      warnings_shown: JSON.stringify([]),
-      created_at: new Date()
-    });
+    const checkId = device ? Database.generateUUID() : null;
+    if (checkId) {
+      await Database.insert('device_check_logs', {
+        id: checkId,
+        device_id: device.id,
+        checker_user_id: null,
+        check_type: 'public_check',
+        ip_address: clientIP,
+        mac_address: macAddress,
+        user_agent: userAgent,
+        latitude: locationLatitude,
+        longitude: locationLongitude,
+        location_accuracy: locationAccuracy,
+        device_fingerprint: JSON.stringify({}),
+        risk_score: 0,
+        suspicious_flags: JSON.stringify([]),
+        check_result: checkResultEnum,
+        warnings_shown: JSON.stringify([]),
+        created_at: new Date()
+      });
+    }
 
     // Alerts: notify owner and admins/LEA if reported device is checked
     if (device && (device.status === 'stolen' || device.status === 'lost')) {
@@ -308,6 +321,32 @@ router.post('/enhanced', async (req, res) => {
         checkerUserId = decoded.id;
       } catch (error) {
         // Continue without user ID for anonymous checks
+      }
+    }
+
+    /* Device check fee logic for authenticated users */
+    if (checkerUserId) {
+      const fraudCheck = await FraudDetectionService.checkAndFlag(checkerUserId, 'DEVICE_CHECK', {
+        ipAddress: networkInfo?.ip || ipValue,
+        macAddress: macValue,
+        deviceId: null
+      });
+
+      const onFreeTier = await RevenueService.deductFreeCheckCredit(checkerUserId);
+      if (!onFreeTier) {
+        const fee = await RevenueService.getFee('device_check_fee');
+        if (fee > 0) {
+          const { pay_by_pass } = req.body;
+          if (!pay_by_pass) {
+            return res.json({
+              requiresPayment: true,
+              amount: fee,
+              purpose: 'Device Check Fee',
+              message: `Free check limit reached. Payment of ₦${fee} required for device checks.`
+            });
+          }
+          await RevenueService.chargeForCheck(checkerUserId, fee, pay_by_pass);
+        }
       }
     }
 
