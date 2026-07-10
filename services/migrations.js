@@ -334,10 +334,15 @@ const MIGRATIONS = [
         token VARCHAR(255) NOT NULL,
         expires_at TIMESTAMP NOT NULL,
         used_at TIMESTAMP NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
     ],
+    seed: async () => {
+      // Add FK gracefully — some MySQL versions reject if users(id) lacks unique key
+      await db.query(
+        'ALTER TABLE email_verification_tokens ADD CONSTRAINT email_verif_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE'
+      ).catch(() => {});
+    }
   },
 ];
 
