@@ -13,33 +13,16 @@ const {
 } = require('../utils/validation-helpers');
 const router = express.Router();
 
-// Configure multer for profile image uploads
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads/profiles');
-    try {
-      await fs.mkdir(uploadDir, { recursive: true });
-      cb(null, uploadDir);
-    } catch (error) {
-      cb(error);
-    }
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, `profile-${req.user.id}-${uniqueSuffix}${path.extname(file.originalname)}`);
-  }
-});
-
+// Configure multer for profile image uploads (memory storage for image processing)
 const upload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
+    fileSize: 5 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
-
     if (mimetype && extname) {
       return cb(null, true);
     } else {
@@ -174,7 +157,12 @@ router.post('/image', authenticateToken, upload.single('image'), async (req, res
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    const imageUrl = `/uploads/profiles/${req.file.filename}`;
+    const FileUploadService = require('../services/FileUploadService');
+    const result = await FileUploadService.processSingleFile(
+      req.file.buffer, req.file.originalname, req.file.mimetype, 'profile_image', req.user.id
+    );
+
+    const imageUrl = result.url;
 
     // Get current profile image to delete old one
     const user = await Database.selectOne('users', 'profile_image_url', 'id = ?', [req.user.id]);
@@ -189,10 +177,9 @@ router.post('/image', authenticateToken, upload.single('image'), async (req, res
     );
 
     // Delete old image file if it exists
-    if (oldImageUrl && oldImageUrl.startsWith('/uploads/profiles/')) {
-      const oldImagePath = path.join(__dirname, '../', oldImageUrl);
+    if (oldImageUrl && oldImageUrl.startsWith('/uploads/')) {
       try {
-        await fs.unlink(oldImagePath);
+        await FileUploadService.deleteByUrl(oldImageUrl);
       } catch (error) {
         console.log('Could not delete old image:', error.message);
       }
@@ -400,10 +387,10 @@ router.delete('/profile', authenticateToken, async (req, res) => {
 
     // Delete profile image if it exists
     const profileImageUrl = user.profile_image_url;
-    if (profileImageUrl && profileImageUrl.startsWith('/uploads/profiles/')) {
-      const imagePath = path.join(__dirname, '../', profileImageUrl);
+    if (profileImageUrl && profileImageUrl.startsWith('/uploads/')) {
       try {
-        await fs.unlink(imagePath);
+        const FileUploadService = require('../services/FileUploadService');
+        await FileUploadService.deleteByUrl(profileImageUrl);
       } catch (error) {
         console.log('Could not delete profile image:', error.message);
       }

@@ -1,5 +1,6 @@
 // Main Express Server - MySQL Version
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -82,6 +83,24 @@ app.use('/api/auth/', authLimiter);
 // Body parsing middleware
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Serve uploaded files statically — public directories only
+// Sensitive directories (kyc, proofs, evidence, ids) require auth via API routes
+const uploadsPath = path.join(__dirname, 'uploads');
+const publicUploadDirs = ['profiles', 'devices', 'transfers', 'misc'];
+app.use('/uploads', (req, res, next) => {
+  // Block access to sensitive subdirectories via static serving
+  const firstSegment = req.path.split('/')[1];
+  const sensitiveDirs = ['kyc', 'proofs', 'evidence', 'ids'];
+  if (sensitiveDirs.includes(firstSegment)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  next();
+}, express.static(uploadsPath, {
+  maxAge: process.env.NODE_ENV === 'production' ? '7d' : '0',
+  etag: true,
+  lastModified: true
+}));
 
 // Trust proxy for rate limiting and IP detection
 app.set('trust proxy', 1);

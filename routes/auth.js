@@ -105,7 +105,7 @@ router.post('/register', async (req, res) => {
       // If a profile image was uploaded, store its URL
       if (req.file && req.file.fieldname === 'profile_image') {
         const FileUploadService = require('../services/FileUploadService');
-        const files = await FileUploadService.processUploadedFiles(req.file, userId, userId, 'user_profile');
+        const files = await FileUploadService.processUploadedFiles(req.file, userId, userId, 'profile_image');
         const imageUrl = files?.[0]?.url || null;
         if (imageUrl) {
           userData.profile_image_url = imageUrl;

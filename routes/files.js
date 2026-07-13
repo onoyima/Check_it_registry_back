@@ -7,26 +7,35 @@ const FileUploadService = require('../services/FileUploadService');
 
 const router = express.Router();
 
-// Serve device image stored as blob
+// Serve device image - tries disk first, falls back to legacy BLOB
 router.get('/view/device-image/:deviceId', async (req, res) => {
   try {
     const { deviceId } = req.params;
     const Database = require('../config');
     const row = await Database.selectOne(
       'devices',
-      'device_image_blob, device_image_mime, device_image_filename',
+      'device_image_blob, device_image_mime, device_image_filename, device_image_url',
       'id = ?',
       [deviceId]
     );
 
-    if (!row || !row.device_image_blob) {
+    if (!row) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    // If stored on disk (new method), redirect to static URL
+    if (row.device_image_url && row.device_image_url.startsWith('/uploads/')) {
+      return res.redirect(row.device_image_url);
+    }
+
+    // Legacy: serve from BLOB
+    if (!row.device_image_blob) {
       return res.status(404).json({ error: 'Device image not found' });
     }
 
     const mime = row.device_image_mime || 'application/octet-stream';
     res.setHeader('Content-Type', mime);
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    // Inline for images
+    res.setHeader('Cache-Control', 'public, max-age=604800');
     if (mime.startsWith('image/')) {
       res.setHeader('Content-Disposition', 'inline');
     } else {
@@ -41,19 +50,47 @@ router.get('/view/device-image/:deviceId', async (req, res) => {
   }
 });
 
-// Serve proof document stored as blob (requires auth)
+// Serve proof document - serves from disk directly (requires auth, no redirect to bypass)
 router.get('/view/proof/:deviceId', authenticateToken, async (req, res) => {
   try {
     const { deviceId } = req.params;
     const Database = require('../config');
     const row = await Database.selectOne(
       'devices',
-      'proof_blob, proof_mime, proof_filename',
+      'proof_blob, proof_mime, proof_filename, proof_url',
       'id = ?',
       [deviceId]
     );
 
-    if (!row || !row.proof_blob) {
+    if (!row) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    // If stored on disk (new method), serve the file directly (no redirect — preserves auth)
+    if (row.proof_url && row.proof_url.startsWith('/uploads/')) {
+      const filePath = path.join(__dirname, '..', row.proof_url);
+      try {
+        await fs.access(filePath);
+        const stats = await fs.stat(filePath);
+        const ext = path.extname(row.proof_filename || row.proof_url).toLowerCase();
+        const mime = row.proof_mime || (ext === '.pdf' ? 'application/pdf' : 'application/octet-stream');
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Content-Length', stats.size);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        if (mime.startsWith('image/')) {
+          res.setHeader('Content-Disposition', 'inline');
+        } else {
+          res.setHeader('Content-Disposition', `attachment; filename="${row.proof_filename || 'proof-document'}"`);
+        }
+        require('fs').createReadStream(filePath).pipe(res);
+        return;
+      } catch (err) {
+        return res.status(404).json({ error: 'Proof document not found on disk' });
+      }
+    }
+
+    // Legacy: serve from BLOB
+    if (!row.proof_blob) {
       return res.status(404).json({ error: 'Proof document not found' });
     }
 
@@ -81,7 +118,7 @@ router.get('/view/:subdir/:filename', async (req, res) => {
     const { token } = req.query; // Optional token for authenticated access
 
     // Validate subdirectory
-    const allowedSubdirs = ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc'];
+    const allowedSubdirs = ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc', 'profiles', 'kyc'];
     if (!allowedSubdirs.includes(subdir)) {
       return res.status(400).json({ error: 'Invalid subdirectory' });
     }
@@ -147,7 +184,7 @@ router.get('/view/:subdir/:filename', async (req, res) => {
     // Set headers
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Length', stats.size);
-    res.setHeader('Cache-Control', 'private, max-age=3600'); // Cache for 1 hour
+    res.setHeader('Cache-Control', contentType.startsWith('image/') ? 'public, max-age=604800' : 'private, max-age=3600');
 
     // For images, allow inline display; for documents, suggest download
     if (contentType.startsWith('image/')) {
@@ -351,7 +388,7 @@ router.delete('/:subdir/:filename', authenticateToken, async (req, res) => {
     const { subdir, filename } = req.params;
 
     // Validate subdirectory
-    const allowedSubdirs = ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc'];
+    const allowedSubdirs = ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc', 'profiles', 'kyc'];
     if (!allowedSubdirs.includes(subdir)) {
       return res.status(400).json({ error: 'Invalid subdirectory' });
     }
@@ -384,6 +421,17 @@ router.get('/stats', authenticateToken, requireRole(['admin']), async (req, res)
   } catch (error) {
     console.error('File stats error:', error);
     res.status(500).json({ error: 'Failed to get file statistics' });
+  }
+});
+
+// Get disk usage for uploads (admin only)
+router.get('/disk-usage', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const usage = await FileUploadService.getDiskUsage();
+    res.json(usage);
+  } catch (error) {
+    console.error('Disk usage error:', error);
+    res.status(500).json({ error: 'Failed to get disk usage' });
   }
 });
 

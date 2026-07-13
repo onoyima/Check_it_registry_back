@@ -48,27 +48,18 @@ router.post('/verify', authenticateToken, async (req, res) => {
       if (!req.file) return res.status(400).json({ error: 'Live selfie is required' });
 
       try {
-        // Manually save file to disk
-        const uploadDir = path.join(__dirname, '../uploads/kyc');
-        if (!fs.existsSync(uploadDir)) {
-          await fsPromises.mkdir(uploadDir, { recursive: true });
-        }
+        // Process and save selfie to disk with image optimization
+        const FileUploadService = require('../services/FileUploadService');
+        const result = await FileUploadService.processSingleFile(
+          req.file.buffer, req.file.originalname, req.file.mimetype, 'selfie_image', req.user.id
+        );
 
-        const filename = `${req.user.id}-${Date.now()}${path.extname(req.file.originalname)}`;
-        const filePath = path.join(uploadDir, filename);
-        
-        await fsPromises.writeFile(filePath, req.file.buffer);
-        
-        // This relative URL would be used by frontend to display if needed, 
-        // or by backend service to read the file.
-        // For local storage, we store the relative path.
-        const selfieUrl = `/uploads/kyc/${filename}`;
+        const selfieUrl = result.url;
+        const filePath = path.join(__dirname, '..', result.url);
 
-        // Pass the absolute path to service for processing, or url if service expects url
-        // Here we pass the path relative to project root or just the filename if service knows where to look.
-        // Let's pass the full path for the mock service to "read" it if it wanted.
-        const result = await KYCService.initiateVerification(req.user.id, nin, filePath);
-        res.json(result);
+        // Pass the absolute path to service for processing
+        const serviceResult = await KYCService.initiateVerification(req.user.id, nin, filePath);
+        res.json(serviceResult);
       } catch (serviceError) {
         console.error(serviceError);
         res.status(400).json({ error: serviceError.message });
