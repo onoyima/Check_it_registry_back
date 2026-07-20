@@ -44,8 +44,24 @@ app.use(compression());
 
 // CORS: allow local dev ports and custom headers for device check context
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
+
+function getCorsOrigin() {
+  if (isDev) return true;
+  const allowed = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
+    .split(',')
+    .map(s => s.trim().replace(/\/$/, ''));
+  if (allowed.length === 1) return allowed[0];
+  return (origin, callback) => {
+    if (!origin || allowed.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  };
+}
+
 app.use(cors({
-  origin: isDev ? true : (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, ''),
+  origin: getCorsOrigin(),
   credentials: true,
   allowedHeaders: [
     'Content-Type',
