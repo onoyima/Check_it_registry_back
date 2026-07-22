@@ -1,7 +1,8 @@
 // MySQL Database Configuration
-// Replace Supabase with MySQL connection
 
 const mysql = require('mysql2/promise');
+
+const isTest = process.env.NODE_ENV === 'test';
 
 // Database configuration
 const dbConfig = {
@@ -9,10 +10,11 @@ const dbConfig = {
   port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'check_it_registry',
+  database: isTest
+    ? (process.env.TEST_DB_NAME || 'check_it_registry_test')
+    : (process.env.DB_NAME || 'check_it_registry'),
   charset: 'utf8mb4',
   timezone: '+00:00',
-  // Connection pool settings
   connectionLimit: parseInt(process.env.DB_POOL_SIZE) || 20,
   queueLimit: 0,
   waitForConnections: true,
@@ -25,12 +27,12 @@ const dbConfig = {
 // Create connection pool
 let pool;
 try {
-  console.log('🔌 DB Config:', JSON.stringify({ host: dbConfig.host, port: dbConfig.port, user: dbConfig.user, database: dbConfig.database }));
+  if (!isTest) {
+    console.log('Database pool created for:', dbConfig.database);
+  }
   pool = mysql.createPool(dbConfig);
-  console.log('✅ Database connection pool created');
 } catch (error) {
-  console.error('❌ Database connection failed:', error.message);
-  console.log('⚠️  Server will start without database connection');
+  console.error('Database connection failed:', error.message);
 }
 
 // Database helper functions
@@ -147,13 +149,13 @@ class Database {
     await this.insert('audit_logs', auditData);
   }
 
-  // UUID generator (MySQL compatible)
+  // UUID generator (MySQL compatible, cryptographically random)
   static generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      const r = Math.random() * 16 | 0;
-      const v = c == 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
+    const crypto = require('crypto');
+    const bytes = crypto.randomBytes(16);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return bytes.toString('hex').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
   }
 
   // Generate case ID
@@ -177,12 +179,16 @@ class Database {
   // JWT utilities
   static generateJWT(payload) {
     const jwt = require('jsonwebtoken');
-    return jwt.sign(payload, process.env.JWT_SECRET || 'your-secret-key', { expiresIn: '24h' });
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('JWT_SECRET is not configured');
+    return jwt.sign(payload, secret, { expiresIn: '24h', algorithm: 'HS256' });
   }
 
   static verifyJWT(token) {
     const jwt = require('jsonwebtoken');
-    return jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('JWT_SECRET is not configured');
+    return jwt.verify(token, secret, { algorithms: ['HS256'] });
   }
 
   // Close pool (for graceful shutdown)

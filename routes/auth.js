@@ -228,7 +228,6 @@ router.post('/login', async (req, res) => {
     );
 
     if (!user) {
-      console.warn(`🔐 Login debug: user not found for email='${email.toLowerCase().trim()}'`);
       return res.status(401).json({ 
         error: 'Invalid email or password. Please check your credentials and try again.' 
       });
@@ -237,7 +236,6 @@ router.post('/login', async (req, res) => {
     // Verify password
     const validPassword = await Database.verifyPassword(password, user.password_hash);
     if (!validPassword) {
-      console.warn(`🔐 Login debug: invalid password for user_id='${user.id}', email='${user.email}'`);
       // Log failed login attempt
       await Database.insert('audit_logs', {
         id: Database.generateUUID(),
@@ -261,15 +259,12 @@ router.post('/login', async (req, res) => {
     // Check device trust status
     const enableOtp = process.env.ENABLE_EMAIL_OTP !== 'false';
     const deviceFingerprint = DeviceSecurityService.generateDeviceFingerprint(req);
-    console.log('🔍 Login Debug - Device fingerprint:', deviceFingerprint.substring(0, 16) + '...');
     
     // Only check trust if OTP is enabled
     const isDeviceTrusted = enableOtp ? await DeviceSecurityService.isDeviceTrusted(user.id, deviceFingerprint) : true;
-    console.log('🔍 Login Debug - Device trusted:', isDeviceTrusted);
     
     // If device is not trusted and OTP is enabled, require OTP verification
     if (!isDeviceTrusted && enableOtp) {
-      console.log('🔍 Login Debug - Requiring device verification');
       // Create OTP for device verification
       await OTPService.createOTP(user.id, 'device_login', deviceFingerprint, 10); // 10 minutes
 
@@ -294,7 +289,6 @@ router.post('/login', async (req, res) => {
     }
 
     // Update session activity for trusted device
-    console.log('🔍 Login Debug - Device is trusted, updating session activity');
     await DeviceSecurityService.updateSessionActivity(user.id, deviceFingerprint);
 
     // Update user login statistics

@@ -125,13 +125,9 @@ class NotificationService {
 
   // Send email notification (from notification object)
   async sendEmail(notification) {
+    if (process.env.NODE_ENV === 'test') return true;
     if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-      console.log("📧 Email notification (SMTP not configured):", {
-        to: notification.recipient,
-        subject: notification.subject,
-        message: notification.message,
-      });
-      return true; // Simulate success in development
+      return true; // Simulate success when SMTP not configured
     }
 
     try {
@@ -156,13 +152,9 @@ class NotificationService {
 
   // Send email directly (for OTP and immediate notifications)
   async sendEmailDirect(to, subject, htmlContent) {
+    if (process.env.NODE_ENV === 'test') return true;
     if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-      console.log("📧 Direct email (SMTP not configured):", {
-        to,
-        subject,
-        content: htmlContent.substring(0, 100) + '...'
-      });
-      return true; // Simulate success in development
+      return true;
     }
 
     try {
@@ -186,12 +178,9 @@ class NotificationService {
 
   // Send SMS notification
   async sendSMS(notification) {
+    if (process.env.NODE_ENV === 'test') return true;
     if (!this.twilioClient) {
-      console.log("📱 SMS notification (Twilio not configured):", {
-        to: notification.recipient,
-        message: notification.message,
-      });
-      return true; // Simulate success in development
+      return true;
     }
 
     try {

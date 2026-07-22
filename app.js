@@ -16,25 +16,49 @@ const errorStore = require('./services/ErrorStore');
 
 // Import middleware
 const { validationErrorHandler } = require('./middleware/validation');
+const { requestLogger } = require('./middleware/requestLogger');
 
 // Import routes
 const { router: authRoutes } = require('./routes/auth');
 const deviceRoutes = require('./routes/device-management');
 const publicCheckRoutes = require('./routes/public-check');
 const reportRoutes = require('./routes/report-management');
-const adminRoutes = require('./routes/admin-portal');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"]
+    }
+  },
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'same-site' }
+}));
 
-// Apply custom security headers to match test expectations
+// Apply custom security headers
 app.use((req, res, next) => {
   res.set({
     'X-Frame-Options': 'DENY',
-    'X-XSS-Protection': '1; mode=block'
+    'X-XSS-Protection': '1; mode=block',
+    'X-Content-Type-Options': 'nosniff',
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=(), payment=()',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0'
   });
   next();
 });
@@ -97,8 +121,26 @@ const authLimiter = rateLimit({
 app.use('/api/auth/', authLimiter);
 
 // Body parsing middleware
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '500kb' }));
+app.use(express.urlencoded({ extended: false, limit: '500kb' }));
+
+// IP blocking middleware — blocks IPs that cause repeated errors
+const IP_BLOCK_THRESHOLD = 10;
+const ipFailCount = new Map();
+
+app.use((req, res, next) => {
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  if (ip) {
+    const blocked = errorStore.getBlockedIps().find(b => b.ip === ip);
+    if (blocked) {
+      return res.status(403).json({ error: 'Your IP has been blocked due to repeated errors. Contact support.' });
+    }
+  }
+  next();
+});
+
+// Request logging — logs auth, error, and slow requests
+app.use(requestLogger);
 
 // Serve uploaded files statically — public directories only
 // Sensitive directories (kyc, proofs, evidence, ids) require auth via API routes
@@ -133,9 +175,8 @@ app.get('/health', (req, res) => {
 // Core API routes (essential functionality only)
 const kycRoutes = require('./routes/kyc');
 
-// ... existing routes ...
 app.use('/api/auth', authRoutes);
-app.use('/api/kyc', kycRoutes); // Add KYC routes
+app.use('/api/kyc', kycRoutes);
 app.use('/api/device-management', deviceRoutes);
 app.use('/api/public-check', publicCheckRoutes);
 app.use('/api/report-management', reportRoutes);
@@ -255,47 +296,30 @@ app.use('*', (req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// IP blocking middleware — blocks IPs that cause repeated errors
-const IP_BLOCK_THRESHOLD = 10;
-const ipFailCount = new Map();
-
-app.use((req, res, next) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-  if (ip) {
-    const blocked = errorStore.getBlockedIps().find(b => b.ip === ip);
-    if (blocked) {
-      return res.status(403).json({ error: 'Your IP has been blocked due to repeated errors. Contact support.' });
-    }
-  }
-  next();
-});
-
 // Validation error handler — handles malformed JSON etc.
 app.use(validationErrorHandler);
 
 // Global error handler — captures all errors for the landing page
 app.use((error, req, res, next) => {
-  console.error('Global error handler:', error);
-  
+  const isDev = process.env.NODE_ENV === 'development';
+  if (isDev) console.error('Global error:', error.message);
+
   const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-  
+
   // Track IP failures for potential blocking
-  if (ip && error.status >= 400) {
+  if (ip && (error.status || 500) >= 400) {
     const count = (ipFailCount.get(ip) || 0) + 1;
     ipFailCount.set(ip, count);
     if (count >= IP_BLOCK_THRESHOLD) {
-      errorStore.blockIp(ip, `Exceeded ${IP_BLOCK_THRESHOLD} error threshold (${count} errors)`);
+      errorStore.blockIp(ip, `Exceeded ${IP_BLOCK_THRESHOLD} error threshold`);
       ipFailCount.delete(ip);
     }
   }
-  
+
   errorStore.capture(error, req);
-  
-  const isDevelopment = process.env.NODE_ENV === 'development';
-  
+
   res.status(error.status || 500).json({
-    error: isDevelopment ? error.message : 'Internal server error',
-    ...(isDevelopment && { stack: error.stack })
+    error: isDev ? error.message : 'Internal server error'
   });
 });
 

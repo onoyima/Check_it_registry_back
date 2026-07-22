@@ -51,8 +51,8 @@ class EnhancedNotificationService {
 
   // Send email notification
   async sendEmail(to, subject, htmlContent, textContent = null) {
+    if (process.env.NODE_ENV === 'test') return { success: true, messageId: 'test-skip' };
     if (!this.emailTransporter) {
-      console.log('📧 Email service not configured, skipping email to:', to);
       return { success: false, reason: 'Email service not configured' };
     }
 
@@ -76,8 +76,8 @@ class EnhancedNotificationService {
 
   // Send SMS notification
   async sendSMS(to, message) {
+    if (process.env.NODE_ENV === 'test') return { success: true, sid: 'test-skip' };
     if (!this.twilioClient) {
-      console.log('📱 SMS service not configured, skipping SMS to:', to);
       return { success: false, reason: 'SMS service not configured' };
     }
 
