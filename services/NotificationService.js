@@ -136,7 +136,7 @@ class NotificationService {
 
     try {
       const mailOptions = {
-        from: `"${process.env.MAIL_FROM_NAME || 'Check It Registry'}" <${process.env.MAIL_FROM_ADDRESS || process.env.SMTP_USER}>`,
+        from: `"${process.env.MAIL_FROM_NAME || 'Prove Ownership'}" <${process.env.MAIL_FROM_ADDRESS || process.env.SMTP_USER}>`,
         to: notification.recipient,
         subject: notification.subject,
         html: this.generateEmailHTML(
@@ -167,7 +167,7 @@ class NotificationService {
 
     try {
       const mailOptions = {
-        from: `"${process.env.MAIL_FROM_NAME || 'Check It Registry'}" <${process.env.MAIL_FROM_ADDRESS || process.env.SMTP_USER}>`,
+        from: `"${process.env.MAIL_FROM_NAME || 'Prove Ownership'}" <${process.env.MAIL_FROM_ADDRESS || process.env.SMTP_USER}>`,
         to,
         subject,
         html: htmlContent,
@@ -233,7 +233,7 @@ class NotificationService {
 
     const content = `${message}${extraContent}`;
     const actionButton = data.actionUrl ? { url: data.actionUrl, text: 'Take Action' } : null;
-    return EmailTemplate.wrapContent('Check It Notification', content, { actionButton });
+    return EmailTemplate.wrapContent('Prove Ownership Notification', content, { actionButton });
   }
 
   // Notification templates
@@ -272,7 +272,7 @@ class NotificationService {
     );
 
     if (user.phone) {
-      const smsMessage = `Check It: Your ${deviceInfo.brand} ${deviceInfo.model} has been verified and is now protected. Case any issues, contact support.`;
+      const smsMessage = `Prove Ownership: Your ${deviceInfo.brand} ${deviceInfo.model} has been verified and is now protected. Case any issues, contact support.`;
       await this.queueNotification(userId, "sms", user.phone, null, smsMessage);
     }
   }
@@ -350,7 +350,7 @@ class NotificationService {
     );
 
     if (user.phone) {
-      const smsMessage = `Check It: Your ${deviceInfo.brand} ${deviceInfo.model} reported stolen. Case ID: ${caseId}. LEA notified.`;
+      const smsMessage = `Prove Ownership: Your ${deviceInfo.brand} ${deviceInfo.model} reported stolen. Case ID: ${caseId}. LEA notified.`;
       await this.queueNotification(userId, "sms", user.phone, null, smsMessage);
     }
   }
@@ -433,7 +433,7 @@ class NotificationService {
     );
 
     if (user.phone) {
-      const smsMessage = `Check It: Your ${deviceInfo.brand} ${deviceInfo.model} may have been found! Case: ${caseId}. LEA will contact you.`;
+      const smsMessage = `Prove Ownership: Your ${deviceInfo.brand} ${deviceInfo.model} may have been found! Case: ${caseId}. LEA will contact you.`;
       await this.queueNotification(userId, "sms", user.phone, null, smsMessage);
     }
   }

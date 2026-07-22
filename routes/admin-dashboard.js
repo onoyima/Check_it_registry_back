@@ -548,7 +548,7 @@ router.put('/devices/:id', async (req, res) => {
 
       if (subject) {
         const fullHtml = EmailTemplate.wrapContent(subject, content);
-        await NotificationService.sendEmailDirect(owner.email, `${subject} - Check It`, fullHtml);
+        await NotificationService.sendEmailDirect(owner.email, `${subject} - Prove Ownership`, fullHtml);
       }
     }
 

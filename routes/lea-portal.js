@@ -593,7 +593,7 @@ router.put('/cases/:caseId/status', async (req, res) => {
           <p>Your case <strong>${caseId}</strong> has been marked as resolved.</p>
           <p><strong>Device:</strong> ${reportCase.brand} ${reportCase.model}</p>
           ${notes ? `<p><strong>LEA Notes:</strong> ${notes}</p>` : ''}
-          <p>Thank you for using Check It Device Registry.</p>
+          <p>Thank you for using Prove Ownership Device Registry.</p>
         `,
         { caseId: caseId, type: 'case_resolved' }
       );

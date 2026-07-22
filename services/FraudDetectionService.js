@@ -191,7 +191,7 @@ class FraudDetectionService {
       id: Database.generateUUID(),
       user_id: null,
       channel: 'email',
-      recipient: process.env.ADMIN_EMAIL || 'admin@checkit.com',
+      recipient: process.env.ADMIN_EMAIL || 'admin@proveownership.com',
       subject,
       message: `Fraud alert: Risk score ${riskScore}`,
       payload: JSON.stringify({ userId, flags, riskScore, action }),

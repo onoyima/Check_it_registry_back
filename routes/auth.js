@@ -658,7 +658,7 @@ router.post('/reset-password', async (req, res) => {
       const fullHtml = EmailTemplate.wrapContent('Password Reset Successful', content);
       await NotificationService.sendEmailDirect(
         email,
-        'Password Reset Successful - Check It',
+        'Password Reset Successful - Prove Ownership',
         fullHtml
       );
     } catch (emailError) {

@@ -99,7 +99,7 @@ class ErrorStore {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Check It API - Status Dashboard</title>
+  <title>Prove Ownership API - Status Dashboard</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0fdf4; color: #111827; }
@@ -130,7 +130,7 @@ class ErrorStore {
 </head>
 <body>
   <div class="header">
-    <h1>🔍 Check It API</h1>
+    <h1>🔍 Prove Ownership API</h1>
     <p>Status Dashboard — Environment: ${this._escape(process.env.NODE_ENV || 'development')}</p>
   </div>
 
@@ -186,7 +186,7 @@ class ErrorStore {
   </div>
 
   <div class="footer">
-    Check It API Server &mdash; ${new Date().toISOString()}
+    Prove Ownership API Server &mdash; ${new Date().toISOString()}
   </div>
 </body>
 </html>`;

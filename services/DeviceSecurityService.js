@@ -289,7 +289,7 @@ class DeviceSecurityService {
 
       const fullHtml = EmailTemplate.wrapContent(subject, content);
       const NotificationService = require('./NotificationService');
-      await NotificationService.sendEmailDirect(user.email, `${subject} - Check It`, fullHtml);
+      await NotificationService.sendEmailDirect(user.email, `${subject} - Prove Ownership`, fullHtml);
     } catch (error) {
       console.error('Error sending device login notification:', error);
     }

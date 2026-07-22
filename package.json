@@ -1,7 +1,7 @@
 {
   "name": "check-it-server",
   "version": "1.0.0",
-  "description": "Check It Device Registry - MySQL Backend Server",
+  "description": "Prove Ownership Device Registry - MySQL Backend Server",
   "main": "app.js",
   "type": "commonjs",
   "scripts": {
@@ -48,6 +48,6 @@
     "express",
     "api"
   ],
-  "author": "Check It Team",
+  "author": "Prove Ownership Team",
   "license": "ISC"
 }

@@ -151,7 +151,7 @@ router.post("/initiate-legacy", async (req, res) => {
         "sms",
         toUser.phone,
         null,
-        `Check It: Device transfer request from ${req.user.name}. ${device.brand} ${device.model}. Code: ${transferCode}. Expires in 24h.`
+        `Prove Ownership: Device transfer request from ${req.user.name}. ${device.brand} ${device.model}. Code: ${transferCode}. Expires in 24h.`
       );
     }
 
@@ -297,7 +297,7 @@ router.post("/accept-legacy", async (req, res) => {
               ? `<p><strong>Handover Proof:</strong> <a href="${proof_of_handover_url}">View Document</a></p>`
               : ""
           }
-          <p>Thank you for using Check It Device Registry.</p>
+          <p>Thank you for using Prove Ownership Device Registry.</p>
         `,
         {
           transferId: transfer.id,

@@ -437,7 +437,7 @@ router.post('/resend-device-verification/:id', async (req, res) => {
     });
     await NotificationService.sendEmailDirect(
       owner.email,
-      'Reminder: Verify Your Device Ownership - Check It',
+      'Reminder: Verify Your Device Ownership - Prove Ownership',
       fullHtml
     );
 

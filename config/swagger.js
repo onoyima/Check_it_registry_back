@@ -5,12 +5,12 @@ const options = {
   definition: {
     openapi: '3.0.0',
     info: {
-      title: 'Check It - Device Registry API',
+      title: 'Prove Ownership - Device Registry API',
       version: '1.0.0',
       description: 'Smart Device Registry & Recovery System API',
       contact: {
-        name: 'Check It Support',
-        email: 'support@checkit.local'
+        name: 'Prove Ownership Support',
+        email: 'support@proveownership.com'
       },
       license: {
         name: 'MIT',

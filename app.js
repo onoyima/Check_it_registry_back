@@ -190,7 +190,7 @@ const swaggerSpecs = require('./config/swagger');
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpecs, {
   explorer: true,
   customCss: '.swagger-ui .topbar { display: none }',
-  customSiteTitle: 'Check It API Documentation'
+  customSiteTitle: 'Prove Ownership API Documentation'
 }));
 
 // Serve OpenAPI JSON
@@ -320,7 +320,7 @@ async function startServer() {
   }
 
   app.listen(PORT, () => {
-    console.log(`Check It API Server running on port ${PORT}`);
+    console.log(`Prove Ownership API Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
 

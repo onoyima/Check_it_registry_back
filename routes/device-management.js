@@ -269,7 +269,7 @@ router.post("/", authenticateToken, async (req, res) => {
       `;
       await NotificationService.sendEmailDirect(
         user.email,
-        "Verify Your Device Ownership - Check It Registry",
+        "Verify Your Device Ownership - Prove Ownership",
         EmailTemplate.wrapContent('Verify Your Device', emailContent, { actionButton: { url: verifyLink, text: 'Verify Ownership' } })
     );
     } catch (mailErr) {
@@ -471,7 +471,7 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
       `;
     await NotificationService.sendEmailDirect(
       user.email,
-      "Device Verified Successfully - Check It Registry",
+      "Device Verified Successfully - Prove Ownership",
       EmailTemplate.wrapContent('Device Verified!', emailContent)
     );
 
@@ -570,7 +570,7 @@ router.post('/verify-device-link', async (req, res) => {
       `;
     await NotificationService.sendEmailDirect(
       user.email,
-      'Device Verified Successfully - Check It Registry',
+      'Device Verified Successfully - Prove Ownership',
       EmailTemplate.wrapContent('Device Verified!', emailContent)
     );
 

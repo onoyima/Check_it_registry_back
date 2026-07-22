@@ -58,7 +58,7 @@ class EnhancedNotificationService {
 
     try {
       const mailOptions = {
-        from: `"${process.env.APP_NAME || 'Check It'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+        from: `"${process.env.APP_NAME || 'Prove Ownership'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
         to,
         subject,
         html: htmlContent,
@@ -203,7 +203,7 @@ class EnhancedNotificationService {
 
       // SMS notification
       if (preferences.sms_notifications && preferences.verification_notifications && preferences.phone) {
-        const smsMessage = `Check It: Your ${deviceName} verification has been ${status}. ${approved ? 'Your device is now protected!' : 'Please check your email for details.'} View: ${process.env.FRONTEND_URL}/devices`;
+        const smsMessage = `Prove Ownership: Your ${deviceName} verification has been ${status}. ${approved ? 'Your device is now protected!' : 'Please check your email for details.'} View: ${process.env.FRONTEND_URL}/devices`;
         await this.sendSMS(preferences.phone, smsMessage);
       }
 
@@ -289,7 +289,7 @@ class EnhancedNotificationService {
 
       // SMS for critical alerts
       if (preferences.sms_notifications && preferences.device_alerts && preferences.phone && alertType === 'suspicious_activity') {
-        const smsMessage = `🚨 Check It ALERT: Suspicious activity detected on your ${deviceName}. Check your email and secure your device immediately. ${process.env.FRONTEND_URL}`;
+        const smsMessage = `🚨 Prove Ownership ALERT: Suspicious activity detected on your ${deviceName}. Check your email and secure your device immediately. ${process.env.FRONTEND_URL}`;
         await this.sendSMS(preferences.phone, smsMessage);
       }
 
@@ -354,7 +354,7 @@ class EnhancedNotificationService {
 
       // SMS for resolved cases
       if (preferences.sms_notifications && preferences.phone && newStatus === 'resolved') {
-        const smsMessage = `Check It: Your report case #${report.case_id} has been RESOLVED! Check your email for details. ${process.env.FRONTEND_URL}/reports`;
+        const smsMessage = `Prove Ownership: Your report case #${report.case_id} has been RESOLVED! Check your email for details. ${process.env.FRONTEND_URL}/reports`;
         await this.sendSMS(preferences.phone, smsMessage);
       }
 
@@ -374,11 +374,11 @@ class EnhancedNotificationService {
       if (userRows.length === 0) return;
 
       const user = userRows[0];
-      const subject = `Welcome to Check It!`;
+      const subject = `Welcome to Prove Ownership!`;
       
       const content = `
         <p>Hello <strong>${user.name}</strong>,</p>
-        <p>Welcome to <strong>Check It</strong>, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
+        <p>Welcome to <strong>Prove Ownership</strong>, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
 
         <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 20px; border-radius: 8px; margin: 25px 0;">
           <h3 style="color: #1E40AF; margin: 0 0 12px; font-size: 16px;">Get Started in 3 Easy Steps</h3>
@@ -420,7 +420,7 @@ class EnhancedNotificationService {
         </div>
 
         <p>If you have any questions, our support team is here to help. Simply reply to this email or visit our help center.</p>
-        <p style="margin-top: 20px;">Stay secure,<br><strong>The Check It Team</strong></p>
+        <p style="margin-top: 20px;">Stay secure,<br><strong>The Prove Ownership Team</strong></p>
       `;
 
       const htmlContent = EmailTemplate.wrapContent(subject, content, {

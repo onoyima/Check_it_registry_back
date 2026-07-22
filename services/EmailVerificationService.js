@@ -157,7 +157,7 @@ class EmailVerificationService {
     
     const content = `
       <p>Hello <strong>${user.name}</strong>,</p>
-      <p>Thank you for registering with <strong>Check It</strong>. To complete your registration and start protecting your devices, please verify your email address.</p>
+      <p>Thank you for registering with <strong>Prove Ownership</strong>. To complete your registration and start protecting your devices, please verify your email address.</p>
       
       <p style="color: #6B7280;">Or copy and paste this link into your browser:</p>
       <p style="word-break: break-all; color: #2563EB; font-size: 13px; background: #F3F4F6; padding: 10px; border-radius: 6px;">${verificationUrl}</p>
@@ -174,16 +174,16 @@ class EmailVerificationService {
         </ul>
       </div>
       
-      <p style="color: #9CA3AF; font-size: 13px;">If you didn't create an account with Check It, please ignore this email.</p>
+      <p style="color: #9CA3AF; font-size: 13px;">If you didn't create an account with Prove Ownership, please ignore this email.</p>
     `;
 
-    const fullHtml = EmailTemplate.wrapContent('Welcome to Check It!', content, {
+    const fullHtml = EmailTemplate.wrapContent('Welcome to Prove Ownership!', content, {
       actionButton: { url: verificationUrl, text: 'Verify Email Address' }
     });
 
     await NotificationService.sendEmailDirect(
       user.email,
-      'Verify Your Email - Check It',
+      'Verify Your Email - Prove Ownership',
       fullHtml
     );
   }

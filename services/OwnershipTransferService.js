@@ -156,7 +156,7 @@ class OwnershipTransferService {
       // Send OTP email
       await NotificationService.sendEmailDirect(
         transfer.seller_email,
-        'Device Transfer Verification - Check It Registry',
+        'Device Transfer Verification - Prove Ownership',
         EmailTemplate.wrapContent('Transfer Initiated', this.generateTransferOTPEmail(transfer, otpCode))
       );
 
@@ -280,7 +280,7 @@ class OwnershipTransferService {
         // Send activation email to seller
         await NotificationService.sendEmailDirect(
           transfer.seller_email,
-          'Device Transfer Activated - Check It Registry',
+          'Device Transfer Activated - Prove Ownership',
           EmailTemplate.wrapContent('Transfer Verified', this.generateTransferActivationEmail(transfer))
         );
 
@@ -288,7 +288,7 @@ class OwnershipTransferService {
         if (transfer.buyer_email) {
           await NotificationService.sendEmailDirect(
             transfer.buyer_email,
-            'Device Available for Transfer - Check It Registry',
+            'Device Available for Transfer - Prove Ownership',
             EmailTemplate.wrapContent('Transfer Request', this.generateBuyerNotificationEmail(transfer))
           );
         }
@@ -363,7 +363,7 @@ class OwnershipTransferService {
         try {
           await NotificationService.sendEmailDirect(
             buyer.email,
-            'Verify Ownership Receipt - Check It Registry',
+            'Verify Ownership Receipt - Prove Ownership',
             EmailTemplate.wrapContent('Transfer Completed', `
               <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                 <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
@@ -466,7 +466,7 @@ class OwnershipTransferService {
       try {
         await NotificationService.sendEmailDirect(
           seller.email,
-          'Device Transfer Completed - Check It Registry',
+          'Device Transfer Completed - Prove Ownership',
           EmailTemplate.wrapContent('Transfer Update', this.generateTransferCompletionEmail(transfer, device, seller, buyer, 'seller'))
         );
       } catch (emailErr) {
@@ -475,7 +475,7 @@ class OwnershipTransferService {
       try {
         await NotificationService.sendEmailDirect(
           buyer.email,
-          'Device Ownership Transferred - Check It Registry',
+          'Device Ownership Transferred - Prove Ownership',
           EmailTemplate.wrapContent('Transfer Update', this.generateTransferCompletionEmail(transfer, device, seller, buyer, 'buyer'))
         );
       } catch (emailErr) {
@@ -655,7 +655,7 @@ class OwnershipTransferService {
         Database.selectOne('devices', 'brand, model, category, imei, serial', 'id = ?', [transfer.device_id])
       ]);
 
-      const subject = 'Device Transfer Rejected - Check It Registry';
+      const subject = 'Device Transfer Rejected - Prove Ownership';
       const bodySeller = `The transfer for device ${device.brand} ${device.model} (${device.category}) with code ${transfer.transfer_code} was rejected${buyer ? ` by ${buyer.name}` : ''}. Reason: ${rejectionReason || 'No reason provided.'}`;
       const bodyBuyer = `You have rejected the transfer for device ${device.brand} ${device.model} (${device.category}). Code: ${transfer.transfer_code}.`;
 
@@ -929,7 +929,7 @@ class OwnershipTransferService {
           <p><strong>Important:</strong> The buyer will receive the transfer code directly via email once you verify this OTP.</p>
         </div>
         <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
+          <p>This is an automated message from Prove Ownership Device Registry</p>
         </div>
       </div>
     `;
@@ -961,7 +961,7 @@ class OwnershipTransferService {
           <p><strong>Security Note:</strong> Do not share any transfer codes. The system delivers codes directly to the intended buyer. The transfer will expire in ${this.TRANSFER_EXPIRY_HOURS} hours.</p>
         </div>
         <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
+          <p>This is an automated message from Prove Ownership Device Registry</p>
         </div>
       </div>
     `;
@@ -987,7 +987,7 @@ class OwnershipTransferService {
           
           <p><strong>To claim ownership:</strong></p>
           <ol>
-            <li>Log into your Check It account</li>
+            <li>Log into your Prove Ownership account</li>
             <li>Go to "Device Transfer" â†’ Claim Transfer</li>
             <li>Enter the 12-character transfer code shown above</li>
             <li>If prompted, enter the Email OTP we send you</li>
@@ -996,7 +996,7 @@ class OwnershipTransferService {
           <p><strong>Important:</strong> The transfer code expires at ${new Date(transfer.expires_at).toLocaleString()}.</p>
         </div>
         <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
+          <p>This is an automated message from Prove Ownership Device Registry</p>
         </div>
       </div>
     `;
@@ -1041,7 +1041,7 @@ class OwnershipTransferService {
 
       await NotificationService.sendEmailDirect(
         t.buyer_email,
-        'Device Transfer Code (Resent) - Check It Registry',
+        'Device Transfer Code (Resent) - Prove Ownership',
         EmailTemplate.wrapContent('Transfer Notification', this.generateBuyerNotificationEmail(t))
       );
 
@@ -1088,13 +1088,13 @@ class OwnershipTransferService {
           ${isSeller ? `
             <p><strong>Important:</strong> You are no longer the registered owner of this device. The new owner can now manage the device registration.</p>
           ` : `
-            <p><strong>Congratulations!</strong> You are now the registered owner of this device. You can manage it through your Check It dashboard.</p>
+            <p><strong>Congratulations!</strong> You are now the registered owner of this device. You can manage it through your Prove Ownership dashboard.</p>
           `}
           
           <p>This transfer has been recorded in our system for security and legal purposes.</p>
         </div>
         <div style="padding: 20px; text-align: center; color: #666; font-size: 12px;">
-          <p>This is an automated message from Check It Device Registry</p>
+          <p>This is an automated message from Prove Ownership Device Registry</p>
         </div>
       </div>
     `;

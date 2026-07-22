@@ -15,7 +15,7 @@ router.get('/config', async (req, res) => {
     // Get system-wide configuration
     const config = {
       system_info: {
-        name: 'Check It Device Registry',
+        name: 'Prove Ownership Device Registry',
         version: '1.0.0',
         environment: process.env.NODE_ENV || 'development',
         api_url: process.env.BASE_URL || 'http://localhost:3006',

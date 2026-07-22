@@ -245,7 +245,7 @@ class OTPService {
 
     const tpl = templates[otpType] || templates.email_verification;
     const fullHtml = EmailTemplate.wrapContent(tpl.title, tpl.content);
-    await NotificationService.sendEmailDirect(user.email, `${tpl.subject} - Check It`, fullHtml);
+    await NotificationService.sendEmailDirect(user.email, `${tpl.subject} - Prove Ownership`, fullHtml);
   }
 
   // Send OTP via SMS (placeholder for future SMS integration)
@@ -255,10 +255,10 @@ class OTPService {
       
       try {
         const messages = {
-          email_verification: `Your Check It verification code is: ${otpCode}. Expires in ${expiryMinutes} minutes.`,
-          device_transfer: `Your Check It device transfer code is: ${otpCode}. Share only with the recipient. Expires in ${expiryMinutes} minutes.`,
-          password_reset: `Your Check It password reset code is: ${otpCode}. Expires in ${expiryMinutes} minutes.`,
-          '2fa': `Your Check It 2FA code is: ${otpCode}. Expires in ${expiryMinutes} minutes.`
+          email_verification: `Your Prove Ownership verification code is: ${otpCode}. Expires in ${expiryMinutes} minutes.`,
+          device_transfer: `Your Prove Ownership device transfer code is: ${otpCode}. Share only with the recipient. Expires in ${expiryMinutes} minutes.`,
+          password_reset: `Your Prove Ownership password reset code is: ${otpCode}. Expires in ${expiryMinutes} minutes.`,
+          '2fa': `Your Prove Ownership 2FA code is: ${otpCode}. Expires in ${expiryMinutes} minutes.`
         };
 
         const message = messages[otpType] || messages.email_verification;

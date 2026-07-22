@@ -10,7 +10,7 @@ async function populateDefaults() {
 
     // Insert default system settings (using actual table structure)
     const settings = [
-      ['app_name', 'Check It Device Registry', 'string', 'Application name'],
+      ['app_name', 'Prove Ownership Device Registry', 'string', 'Application name'],
       ['app_version', '1.0.0', 'string', 'Application version'],
       ['maintenance_mode', 'false', 'boolean', 'Enable maintenance mode'],
       ['registration_enabled', 'true', 'boolean', 'Allow new user registrations'],
@@ -49,7 +49,7 @@ async function populateDefaults() {
 
     // Insert default system alerts (using actual table structure)
     const alerts = [
-      ['system', 'low', 'System Started', 'Check It Device Registry system has been started successfully.'],
+      ['system', 'low', 'System Started', 'Prove Ownership Device Registry system has been started successfully.'],
       ['system', 'medium', 'Database Migration Complete', 'Enhanced features migration has been applied successfully.']
     ];
 

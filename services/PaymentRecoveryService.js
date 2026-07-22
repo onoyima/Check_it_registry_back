@@ -286,7 +286,7 @@ class PaymentRecoveryService {
       // Send activation email
       await NotificationService.sendEmailDirect(
         service.user_email,
-        'Recovery Service Activated - Check It Registry',
+        'Recovery Service Activated - Prove Ownership',
         EmailTemplate.wrapContent('Recovery Service Activated', this.generateActivationEmail(service, agent))
       );
 
@@ -523,7 +523,7 @@ class PaymentRecoveryService {
         if (user) {
           await NotificationService.sendEmailDirect(
             user.email,
-            'Recovery Service Refund Processed - Check It Registry',
+            'Recovery Service Refund Processed - Prove Ownership',
             EmailTemplate.wrapContent('Refund Processed', this.generateRefundEmail(service, refundAmount))
           );
         }
@@ -670,7 +670,7 @@ class PaymentRecoveryService {
 
       await NotificationService.sendEmailDirect(
         service.user_email,
-        `Recovery Update: ${this.getStatusDisplayName(newStatus)} - Check It`,
+        `Recovery Update: ${this.getStatusDisplayName(newStatus)} - Prove Ownership`,
         EmailTemplate.wrapContent('Recovery Status Update', this.generateStatusUpdateEmail(service, oldStatus, newStatus))
       );
 

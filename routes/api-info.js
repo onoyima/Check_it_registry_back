@@ -17,7 +17,7 @@ router.get('/status', async (req, res) => {
     }
 
     const startTime = Date.now();
-    
+
     // Test database connectivity
     let dbStatus = 'healthy';
     let dbResponseTime = 0;
@@ -44,7 +44,7 @@ router.get('/status', async (req, res) => {
     const responseTime = Date.now() - startTime;
 
     res.json({
-      api_name: 'Check It Device Registry API',
+      api_name: 'Prove Ownership Device Registry API',
       version: '1.0.0',
       status: 'operational',
       timestamp: new Date().toISOString(),
@@ -76,7 +76,7 @@ router.get('/status', async (req, res) => {
   } catch (error) {
     console.error('API status error:', error);
     res.status(500).json({
-      api_name: 'Check It Device Registry API',
+      api_name: 'Prove Ownership Device Registry API',
       status: 'error',
       error: 'Failed to retrieve API status',
       timestamp: new Date().toISOString()
@@ -89,7 +89,7 @@ router.get('/info', async (req, res) => {
   try {
     const apiInfo = {
       api: {
-        name: 'Check It Device Registry API',
+        name: 'Prove Ownership Device Registry API',
         version: '1.0.0',
         description: 'Smart Device Registry & Recovery System API',
         base_url: process.env.BASE_URL || 'http://localhost:3006',
@@ -350,7 +350,7 @@ router.get('/info', async (req, res) => {
         500: 'Internal Server Error'
       },
       contact: {
-        support_email: process.env.ADMIN_EMAIL || 'admin@checkit.local',
+        support_email: process.env.ADMIN_EMAIL || 'admin@proveownership.com',
         documentation: '/api/docs',
         postman_collection: '/postman/Check-It-API.postman_collection.json'
       }
@@ -423,7 +423,7 @@ router.get('/changelog', (req, res) => {
       version: '1.0.0',
       date: '2024-01-15',
       changes: [
-        'Initial release of Check It Device Registry API',
+        'Initial release of Prove Ownership Device Registry API',
         'Complete authentication system with JWT',
         'Device registration and verification',
         'Public device checking',

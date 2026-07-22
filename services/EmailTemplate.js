@@ -4,7 +4,7 @@
 class EmailTemplate {
   constructor() {
     this.logoUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/logo1.png`;
-    this.brandName = 'Check It';
+    this.brandName = 'Prove Ownership';
     this.tagline = 'Smart Device Registry & Recovery System';
     this.baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
   }
