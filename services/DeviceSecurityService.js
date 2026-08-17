@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const Database = require('../config');
 const EmailTemplate = require('./EmailTemplate');
 const OTPService = require('./OTPService');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 class DeviceSecurityService {
   // Generate device fingerprint from request headers and IP
@@ -255,7 +256,7 @@ class DeviceSecurityService {
   // Send device login notification
   async sendDeviceLoginNotification(userId, deviceInfo, ipAddress, isNewDevice = false) {
     try {
-      const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
+      const user = await Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [userId]);
       if (!user) return;
 
       const subject = isNewDevice ?
@@ -263,7 +264,7 @@ class DeviceSecurityService {
         'Device Login Alert';
 
       const content = `
-        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Hello <strong>${getDisplayName(user)}</strong>,</p>
         <p>A ${isNewDevice ? 'new ' : ''}login was detected on your account.</p>
         <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
           <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">

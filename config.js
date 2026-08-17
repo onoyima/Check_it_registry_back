@@ -1,5 +1,6 @@
 // MySQL Database Configuration
 
+require('dotenv').config();
 const mysql = require('mysql2/promise');
 
 const isTest = process.env.NODE_ENV === 'test';

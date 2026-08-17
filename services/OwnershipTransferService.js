@@ -3,6 +3,7 @@ const Database = require('../config');
 const OTPService = require('./OTPService');
 const NotificationService = require('./NotificationService');
 const EmailTemplate = require('./EmailTemplate');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 class OwnershipTransferService {
   constructor() {
@@ -136,6 +137,9 @@ class OwnershipTransferService {
         SELECT 
           ot.*,
           u.name as seller_name,
+          u.first_name as seller_first_name,
+          u.middle_name as seller_middle_name,
+          u.last_name as seller_last_name,
           u.email as seller_email,
           d.brand,
           d.model,
@@ -152,6 +156,12 @@ class OwnershipTransferService {
       }
 
       const transfer = transferDetails[0];
+      transfer.seller_display_name = getDisplayName({
+        name: transfer.seller_name,
+        first_name: transfer.seller_first_name,
+        middle_name: transfer.seller_middle_name,
+        last_name: transfer.seller_last_name
+      });
 
       // Send OTP email
       await NotificationService.sendEmailDirect(
@@ -263,6 +273,9 @@ class OwnershipTransferService {
         SELECT 
           ot.*,
           u.name as seller_name,
+          u.first_name as seller_first_name,
+          u.middle_name as seller_middle_name,
+          u.last_name as seller_last_name,
           u.email as seller_email,
           d.brand,
           d.model,
@@ -276,6 +289,12 @@ class OwnershipTransferService {
 
       if (transferDetails.length > 0) {
         const transfer = transferDetails[0];
+        transfer.seller_display_name = getDisplayName({
+          name: transfer.seller_name,
+          first_name: transfer.seller_first_name,
+          middle_name: transfer.seller_middle_name,
+          last_name: transfer.seller_last_name
+        });
 
         // Send activation email to seller
         await NotificationService.sendEmailDirect(
@@ -357,7 +376,7 @@ class OwnershipTransferService {
         );
 
         // Get buyer details
-        const buyer = await Database.selectOne('users', 'name, email', 'id = ?', [buyerUserId]);
+        const buyer = await Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [buyerUserId]);
 
         // Send OTP to buyer (do not fail transfer on email errors)
         try {
@@ -370,7 +389,7 @@ class OwnershipTransferService {
                   <h1>ðŸ” Verify Receipt</h1>
                 </div>
                 <div style="padding: 30px; background: #f9f9f9;">
-                  <p>Hello ${buyer.name || ''},</p>
+                  <p>Hello ${getDisplayName(buyer)},</p>
                   <p>Use this verification code to confirm you are receiving the device:</p>
                   <div style="background: white; padding: 30px; text-align: center; margin: 20px 0; border: 3px solid #646cff; border-radius: 10px;">
                     <h1 style="color: #646cff; font-size: 48px; margin: 0; letter-spacing: 10px; font-family: monospace;">${otpCode}</h1>
@@ -458,8 +477,8 @@ class OwnershipTransferService {
 
       // Get user details for notifications
       const [seller, buyer] = await Promise.all([
-        Database.selectOne('users', 'name, email', 'id = ?', [transfer.from_user_id]),
-        Database.selectOne('users', 'name, email', 'id = ?', [buyerUserId])
+        Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [transfer.from_user_id]),
+        Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [buyerUserId])
       ]);
 
       // Send completion notifications (do not fail transfer if email sending errors occur)
@@ -650,13 +669,13 @@ class OwnershipTransferService {
 
       // Notify seller and buyer (if present)
       const [seller, buyer, device] = await Promise.all([
-        Database.selectOne('users', 'name, email', 'id = ?', [transfer.from_user_id]),
-        transfer.buyer_email ? Database.selectOne('users', 'name, email', 'id = ?', [buyerUserId]) : Promise.resolve(null),
+        Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [transfer.from_user_id]),
+        transfer.buyer_email ? Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [buyerUserId]) : Promise.resolve(null),
         Database.selectOne('devices', 'brand, model, category, imei, serial', 'id = ?', [transfer.device_id])
       ]);
 
       const subject = 'Device Transfer Rejected - Prove Ownership';
-      const bodySeller = `The transfer for device ${device.brand} ${device.model} (${device.category}) with code ${transfer.transfer_code} was rejected${buyer ? ` by ${buyer.name}` : ''}. Reason: ${rejectionReason || 'No reason provided.'}`;
+      const bodySeller = `The transfer for device ${device.brand} ${device.model} (${device.category}) with code ${transfer.transfer_code} was rejected${buyer ? ` by ${getDisplayName(buyer)}` : ''}. Reason: ${rejectionReason || 'No reason provided.'}`;
       const bodyBuyer = `You have rejected the transfer for device ${device.brand} ${device.model} (${device.category}). Code: ${transfer.transfer_code}.`;
 
       // Send notifications but do not fail rejection if email sending errors occur
@@ -820,8 +839,14 @@ class OwnershipTransferService {
           d.imei,
           d.serial,
           seller.name as seller_name,
+          seller.first_name as seller_first_name,
+          seller.middle_name as seller_middle_name,
+          seller.last_name as seller_last_name,
           seller.email as seller_email,
           buyer.name as buyer_name,
+          buyer.first_name as buyer_first_name,
+          buyer.middle_name as buyer_middle_name,
+          buyer.last_name as buyer_last_name,
           buyer.email as buyer_email
         FROM ownership_transfers ot
         JOIN devices d ON ot.device_id = d.id
@@ -911,7 +936,7 @@ class OwnershipTransferService {
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Verify Your Device Transfer</h2>
-          <p>Hello ${transfer.seller_name},</p>
+          <p>Hello ${transfer.seller_display_name},</p>
           <p>You have initiated a transfer for your device:</p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
@@ -943,7 +968,7 @@ class OwnershipTransferService {
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Your Device Transfer is Ready</h2>
-          <p>Hello ${transfer.seller_name},</p>
+          <p>Hello ${transfer.seller_display_name},</p>
           <p>Your device transfer has been activated and is ready for the buyer:</p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
@@ -980,7 +1005,7 @@ class OwnershipTransferService {
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
             <h3>${transfer.brand} ${transfer.model}</h3>
-            <p><strong>Seller:</strong> ${transfer.seller_name}</p>
+            <p><strong>Seller:</strong> ${transfer.seller_display_name}</p>
             ${transfer.sale_price ? `<p><strong>Price:</strong> $${transfer.sale_price}</p>` : ''}
             <p><strong>Transfer Code:</strong> <span style="font-family: monospace; color: #646cff; letter-spacing: 0.08em;">${transfer.transfer_code}</span></p>
           </div>
@@ -1030,7 +1055,7 @@ class OwnershipTransferService {
 
       // Load details for email
       const details = await Database.query(`
-        SELECT ot.*, u.name as seller_name, u.email as seller_email, d.brand, d.model, d.imei, d.serial
+        SELECT ot.*, u.name as seller_name, u.first_name as seller_first_name, u.middle_name as seller_middle_name, u.last_name as seller_last_name, u.email as seller_email, d.brand, d.model, d.imei, d.serial
         FROM ownership_transfers ot
         JOIN users u ON ot.from_user_id = u.id
         JOIN devices d ON ot.device_id = d.id
@@ -1038,6 +1063,12 @@ class OwnershipTransferService {
       `, [transferId]);
 
       const t = details[0] || transfer;
+      t.seller_display_name = getDisplayName({
+        name: t.seller_name,
+        first_name: t.seller_first_name,
+        middle_name: t.seller_middle_name,
+        last_name: t.seller_last_name
+      });
 
       await NotificationService.sendEmailDirect(
         t.buyer_email,
@@ -1074,13 +1105,13 @@ class OwnershipTransferService {
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Device Ownership ${isSeller ? 'Transferred' : 'Received'}</h2>
-          <p>Hello ${isSeller ? seller.name : buyer.name},</p>
+          <p>Hello ${isSeller ? getDisplayName(seller) : getDisplayName(buyer)},</p>
           <p>The device ownership transfer has been completed successfully:</p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
             <h3>${device.brand} ${device.model}</h3>
             <p><strong>Transfer Code:</strong> ${transfer.transfer_code}</p>
-            <p><strong>${isSeller ? 'Buyer' : 'Seller'}:</strong> ${otherParty.name} (${otherParty.email})</p>
+            <p><strong>${isSeller ? 'Buyer' : 'Seller'}:</strong> ${getDisplayName(otherParty)} (${otherParty.email})</p>
             <p><strong>Completed:</strong> ${new Date().toLocaleString()}</p>
             ${transfer.sale_price ? `<p><strong>Sale Price:</strong> $${transfer.sale_price}</p>` : ''}
           </div>

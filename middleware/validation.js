@@ -104,7 +104,7 @@ const handleValidationErrors = (req, res, next) => {
 const commonValidations = {
   // User validation
   userRegistration: [
-    validateInput('name', { required: true, minLength: 2, maxLength: 100 }),
+    validateInput('first_name', { required: true, minLength: 1, maxLength: 50 }),
     validateInput('email', { required: true, type: 'email' }),
     validateInput('password', { 
       required: true, 

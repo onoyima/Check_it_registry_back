@@ -214,6 +214,9 @@ app.use('/api/revenue-admin', require('./routes/revenue-admin'));
 // Business customer onboarding
 app.use('/api/business', require('./routes/business-onboarding'));
 
+// Business registration and profile
+app.use('/api/business-profile', require('./routes/business-registration'));
+
 // Security endpoints (MFA, reauthentication)
 app.use('/api/security', require('./routes/security-routes'));
 
@@ -239,6 +242,9 @@ app.use('/api/sessions', require('./routes/session-management'));
 
 // PII encryption admin route
 app.use('/api/admin/pii', require('./routes/pii-admin'));
+
+// Archive, restore, deleted records management
+app.use('/api/archive', require('./routes/archive'));
 
 // API Documentation
 const swaggerUi = require('swagger-ui-express');

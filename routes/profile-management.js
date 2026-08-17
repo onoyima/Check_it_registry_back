@@ -5,12 +5,15 @@ const path = require('path');
 const fs = require('fs').promises;
 const Database = require('../config');
 const { authenticateToken } = require('../middleware/auth');
+const ArchiveService = require('../services/ArchiveService');
+const OTPService = require('../services/OTPService');
 const { 
   validateProfileUpdate, 
   validatePasswordChange, 
   validateAccountDeletion,
   sanitizeObject 
 } = require('../utils/validation-helpers');
+const { getDisplayName, buildUserNameFields, nameSelectColumns } = require('../utils/user-helpers');
 const router = express.Router();
 
 // Configure multer for profile image uploads (memory storage for image processing)
@@ -59,7 +62,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
     // Get user profile with stats
     const user = await Database.selectOne(
       'users',
-      `id, name, email, phone, region, role, profile_image_url, created_at, verified_at, 
+      `id, ${nameSelectColumns()}, email, phone, region, role, profile_image_url, created_at, verified_at, 
        last_login_at, login_count, two_factor_enabled, email_notifications, 
        sms_notifications, push_notifications, device_alerts, transfer_notifications,
        verification_notifications, report_updates, marketing_emails, theme_preference,
@@ -121,7 +124,8 @@ router.put('/profile', authenticateToken, async (req, res) => {
   try {
     // Validate and sanitize input
     validateProfileUpdate(req.body);
-    const { name, phone, region } = sanitizeObject(req.body);
+    const { phone, region } = sanitizeObject(req.body);
+    const nameFields = buildUserNameFields(sanitizeObject(req.body));
 
     // Check if user exists
     const user = await Database.selectOne('users', 'id', 'id = ?', [req.user.id]);
@@ -132,7 +136,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
     // Update user profile
     await Database.update(
       'users',
-      { name, phone: phone || null, region: region || null, updated_at: new Date() },
+      { ...nameFields, phone: phone || null, region: region || null, updated_at: new Date() },
       'id = ?',
       [req.user.id]
     );
@@ -349,107 +353,125 @@ router.get('/activity', authenticateToken, async (req, res) => {
   }
 });
 
-// Delete user account
-router.delete('/profile', authenticateToken, async (req, res) => {
+// ═══════════════════════════════════════════════════════════════
+// ACCOUNT DELETION (Secure: password → security question → reason → OTP → soft-delete)
+// ═══════════════════════════════════════════════════════════════
+
+// Step 1: Verify password before starting deletion flow
+router.post('/delete-account/verify-password', authenticateToken, async (req, res) => {
   try {
-    // Validate input
-    validateAccountDeletion(req.body);
     const { password } = req.body;
-
-    // Get current password hash
-    const user = await Database.selectOne(
-      'users', 
-      'password_hash, profile_image_url', 
-      'id = ?', 
-      [req.user.id]
-    );
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Verify password
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    if (!isValidPassword) {
-      return res.status(400).json({ error: 'Password is incorrect' });
-    }
-
-    // Log the account deletion
-    await logActivity(req.user.id, 'account_deleted', 'user', req.user.id, 
-      'User deleted their account', req.ip, req.get('User-Agent'));
-
-    // Delete related data (cascade delete should handle most of this)
-    await Database.query('DELETE FROM device_transfers WHERE from_user_id = ? OR to_user_id = ?', 
-      [req.user.id, req.user.id]);
-    await Database.query('DELETE FROM reports WHERE reporter_id = ?', [req.user.id]);
-    await Database.query('DELETE FROM devices WHERE user_id = ?', [req.user.id]);
-    await Database.query('DELETE FROM users WHERE id = ?', [req.user.id]);
-
-    // Delete profile image if it exists
-    const profileImageUrl = user.profile_image_url;
-    if (profileImageUrl && profileImageUrl.startsWith('/uploads/')) {
-      try {
-        const FileUploadService = require('../services/FileUploadService');
-        await FileUploadService.deleteByUrl(profileImageUrl);
-      } catch (error) {
-        console.log('Could not delete profile image:', error.message);
-      }
-    }
-
-    res.json({ message: 'Account deleted successfully' });
+    if (!password) return res.status(400).json({ error: 'Password is required' });
+    const user = await Database.queryOne('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(400).json({ error: 'Incorrect password' });
+    const hasQuestion = await ArchiveService.hasSecurityQuestion(req.user.id);
+    const question = await ArchiveService.getSecurityQuestion(req.user.id);
+    res.json({ success: true, hasSecurityQuestion: hasQuestion, question: question?.question || null });
   } catch (error) {
-    console.error('Error deleting account:', error);
-    res.status(500).json({ error: 'Failed to delete account' });
+    console.error('Delete account verify password error:', error);
+    res.status(500).json({ error: 'Verification failed' });
   }
 });
 
-// Export user data (GDPR compliance)
+// Step 2: Verify security question
+router.post('/delete-account/verify-security', authenticateToken, async (req, res) => {
+  try {
+    const { answer } = req.body;
+    if (!answer) return res.status(400).json({ error: 'Security answer is required' });
+    const result = await ArchiveService.verifySecurityQuestion(req.user.id, answer);
+    if (!result.verified) return res.status(400).json({ error: result.error });
+    // Send OTP for deletion
+    await OTPService.createOTP(req.user.id, 'account_deletion', null, 10);
+    const user = await Database.queryOne('SELECT phone, email FROM users WHERE id = ?', [req.user.id]);
+    const maskedPhone = user?.phone ? user.phone.replace(/(\d{3})\d{4}(\d{3})/, '$1****$2') : null;
+    res.json({ success: true, otpSent: true, maskedPhone, message: 'OTP sent to your registered phone' });
+  } catch (error) {
+    console.error('Delete account verify security error:', error);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+// Step 3: Resend OTP for deletion
+router.post('/delete-account/resend-otp', authenticateToken, async (req, res) => {
+  try {
+    await OTPService.createOTP(req.user.id, 'account_deletion', null, 10);
+    res.json({ success: true, message: 'OTP resent' });
+  } catch (error) {
+    console.error('Delete account resend OTP error:', error);
+    res.status(500).json({ error: 'Failed to resend OTP' });
+  }
+});
+
+// Step 4: Final deletion (requires reason + OTP + confirmation text)
+router.post('/delete-account', authenticateToken, async (req, res) => {
+  try {
+    const { reason, otpCode, confirmText } = req.body;
+    if (!reason) return res.status(400).json({ error: 'Deletion reason is required' });
+    if (!otpCode) return res.status(400).json({ error: 'OTP verification is required' });
+    if (confirmText !== 'DELETE_MY_ACCOUNT') {
+      return res.status(400).json({ error: 'Please type DELETE_MY_ACCOUNT to confirm' });
+    }
+    // Verify OTP
+    const otpResult = await OTPService.verifyOTP(req.user.id, 'account_deletion', otpCode);
+    if (!otpResult.success) {
+      return res.status(400).json({ error: otpResult.error || 'Invalid OTP' });
+    }
+    // Perform soft delete
+    const result = await ArchiveService.softDeleteUser(
+      req.user.id, reason, true, true, req.user.id
+    );
+    res.json({
+      success: true,
+      message: 'Account has been deleted. Your data has been archived for administrative purposes.',
+      archiveId: result.archiveId
+    });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete account' });
+  }
+});
+
+// Setup security question
+router.post('/security-question', authenticateToken, async (req, res) => {
+  try {
+    const { question, answer } = req.body;
+    if (!question || !answer) return res.status(400).json({ error: 'Question and answer are required' });
+    const result = await ArchiveService.setupSecurityQuestion(req.user.id, question, answer);
+    res.json({ success: true, message: 'Security question configured', question: result.question });
+  } catch (error) {
+    console.error('Setup security question error:', error);
+    res.status(500).json({ error: 'Failed to setup security question' });
+  }
+});
+
+// Get my security question status
+router.get('/security-question', authenticateToken, async (req, res) => {
+  try {
+    const has = await ArchiveService.hasSecurityQuestion(req.user.id);
+    const question = await ArchiveService.getSecurityQuestion(req.user.id);
+    res.json({ configured: has, question: question?.question || null });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch security question' });
+  }
+});
+
+// Data export - immediate JSON download
 router.get('/export', authenticateToken, async (req, res) => {
   try {
-    // Get user data
-    const userData = await Database.selectOne(
-      'users',
-      `id, name, email, phone, region, role, created_at, verified_at, last_login_at,
-       email_notifications, sms_notifications, push_notifications`,
-      'id = ?',
-      [req.user.id]
+    const { type } = req.query;
+    const exportType = type || 'full';
+    const data = await ArchiveService.generateUserDataExport(req.user.id, exportType);
+    await ArchiveService.logExportAudit(
+      req.user.id, exportType, 'completed', null, 0, req.ip, req.get('User-Agent')
     );
-
-    // Get devices
-    const devices = await Database.query(`
-      SELECT brand, model, color, imei, serial, status, created_at
-      FROM devices WHERE user_id = ?
-    `, [req.user.id]);
-
-    // Get reports
-    const reports = await Database.query(`
-      SELECT case_id, report_type, status, occurred_at, location, description, created_at
-      FROM reports WHERE reporter_id = ?
-    `, [req.user.id]);
-
-    // Get activity logs (last 100)
-    const activities = await Database.query(`
-      SELECT action, resource_type, details, ip_address, created_at
-      FROM audit_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 100
-    `, [req.user.id]);
-
-    const exportData = {
-      user: userData,
-      devices,
-      reports,
-      recent_activities: activities,
-      exported_at: new Date().toISOString()
-    };
-
-    await logActivity(req.user.id, 'data_exported', 'user', req.user.id, 
-      'User exported their data', req.ip, req.get('User-Agent'));
-
     res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename="user-data-${req.user.id}-${Date.now()}.json"`);
-    res.json(exportData);
+    res.setHeader('Content-Disposition', `attachment; filename="prove-ownership-export-${exportType}-${Date.now()}.json"`);
+    res.json(data);
   } catch (error) {
-    console.error('Error exporting user data:', error);
-    res.status(500).json({ error: 'Failed to export user data' });
+    console.error('Data export error:', error);
+    res.status(500).json({ error: 'Failed to export data' });
   }
 });
 
@@ -552,14 +574,14 @@ router.put('/privacy', authenticateToken, async (req, res) => {
 // Update user profile (name, phone, region)
 router.put('/update', authenticateToken, async (req, res) => {
   try {
-    const { name, phone, region } = req.body;
-    const updateData = { updated_at: new Date() };
-    if (name !== undefined) updateData.name = name;
+    const { phone, region } = req.body;
+    const nameFields = buildUserNameFields(req.body);
+    const updateData = { ...nameFields, updated_at: new Date() };
     if (phone !== undefined) updateData.phone = phone;
     if (region !== undefined) updateData.region = region;
 
     await Database.update('users', updateData, 'id = ?', [req.user.id]);
-    const user = await Database.selectOne('users', 'id, name, email, phone, region, role', 'id = ?', [req.user.id]);
+    const user = await Database.selectOne('users', `id, ${nameSelectColumns()}, email, phone, region, role`, 'id = ?', [req.user.id]);
     res.json({ message: 'Profile updated successfully', user });
   } catch (error) {
     console.error('Error updating profile:', error);

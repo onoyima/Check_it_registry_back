@@ -50,10 +50,14 @@ class MarketplaceService {
     } = filters;
 
     let sql = `
-      SELECT l.*, d.brand, d.model, d.category, u.name as seller_name, u.kyc_status as seller_verified
+      SELECT l.*, d.brand, d.model, d.category, u.name as seller_name,
+        CASE WHEN u.kyc_status = 'verified' THEN 'verified'
+             WHEN bp.verification_status = 'verified' THEN 'verified'
+             ELSE 'unverified' END as seller_verified
       FROM marketplace_listings l
       JOIN devices d ON l.device_id = d.id
       JOIN users u ON l.seller_id = u.id
+      LEFT JOIN business_profiles bp ON bp.user_id = u.id
       WHERE 1=1
     `;
     const params = [];
@@ -129,10 +133,14 @@ class MarketplaceService {
 
   static async getListingById(id) {
     const sql = `
-      SELECT l.*, d.brand, d.model, d.category, d.storage_capacity, d.color, u.name as seller_name, u.kyc_status as seller_verified, u.id as seller_id
+      SELECT l.*, d.brand, d.model, d.category, d.storage_capacity, d.color, u.name as seller_name, u.id as seller_id,
+        CASE WHEN u.kyc_status = 'verified' THEN 'verified'
+             WHEN bp.verification_status = 'verified' THEN 'verified'
+             ELSE 'unverified' END as seller_verified
       FROM marketplace_listings l
       JOIN devices d ON l.device_id = d.id
       JOIN users u ON l.seller_id = u.id
+      LEFT JOIN business_profiles bp ON bp.user_id = u.id
       WHERE l.id = ?
     `;
     const rows = await Database.query(sql, [id]);
@@ -472,10 +480,14 @@ class MarketplaceService {
     } = filters;
 
     let sql = `
-      SELECT l.*, d.brand, d.model, d.category, u.name as seller_name, u.kyc_status as seller_verified, u.email as seller_email
+      SELECT l.*, d.brand, d.model, d.category, u.name as seller_name, u.email as seller_email,
+        CASE WHEN u.kyc_status = 'verified' THEN 'verified'
+             WHEN bp.verification_status = 'verified' THEN 'verified'
+             ELSE 'unverified' END as seller_verified
       FROM marketplace_listings l
       JOIN devices d ON l.device_id = d.id
       JOIN users u ON l.seller_id = u.id
+      LEFT JOIN business_profiles bp ON bp.user_id = u.id
       WHERE 1=1
     `;
     const params = [];

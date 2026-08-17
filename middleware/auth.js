@@ -14,7 +14,7 @@ const authenticateToken = async (req, res, next) => {
 
     const user = await Database.selectOne(
       "users",
-      "id, name, email, phone, role, region, kyc_status, is_verified, caution_flag",
+      "id, name, first_name, middle_name, last_name, email, phone, role, region, kyc_status, is_verified, caution_flag",
       "id = ?",
       [decoded.id]
     );

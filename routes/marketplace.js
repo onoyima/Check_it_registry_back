@@ -3,6 +3,7 @@ const router = express.Router();
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const MarketplaceService = require('../services/MarketplaceService');
 const Database = require('../config');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 // Create a new listing
 router.post('/', authenticateToken, async (req, res) => {
@@ -19,7 +20,7 @@ router.post('/', authenticateToken, async (req, res) => {
 router.get('/debug-listing-count', async (req, res) => {
   try {
     const allActive = await Database.query("SELECT COUNT(*) as cnt FROM marketplace_listings WHERE status = 'active'");
-    const joined = await Database.query(`SELECT l.*, d.brand, d.model, d.category, u.name as seller_name, u.kyc_status as seller_verified FROM marketplace_listings l JOIN devices d ON l.device_id = d.id JOIN users u ON l.seller_id = u.id WHERE 1=1 AND l.status = 'active' ORDER BY l.created_at DESC LIMIT 20 OFFSET 0`);
+    const joined = await Database.query(`SELECT l.*, d.brand, d.model, d.category, u.name as seller_name, u.first_name as seller_first_name, u.middle_name as seller_middle_name, u.last_name as seller_last_name, u.kyc_status as seller_verified FROM marketplace_listings l JOIN devices d ON l.device_id = d.id JOIN users u ON l.seller_id = u.id WHERE 1=1 AND l.status = 'active' ORDER BY l.created_at DESC LIMIT 20 OFFSET 0`);
     const countOnly = await Database.query(`SELECT COUNT(*) as cnt FROM marketplace_listings l JOIN devices d ON l.device_id = d.id JOIN users u ON l.seller_id = u.id WHERE l.status = 'active'`);
     res.json({
       rawCount: allActive[0]?.cnt || 0,

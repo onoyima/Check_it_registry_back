@@ -4,6 +4,7 @@ const Database = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
 const NotificationService = require('../services/NotificationService');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -64,6 +65,9 @@ router.get('/stats', async (req, res) => {
         d.model,
         d.imei,
         u.name as owner_name,
+        u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name,
+        u.last_name as owner_last_name,
         u.region
       FROM reports r
       JOIN devices d ON r.device_id = d.id
@@ -104,6 +108,9 @@ router.get('/reported-devices', async (req, res) => {
         d.serial,
         d.status,
         u.name AS owner_name,
+        u.first_name AS owner_first_name,
+        u.middle_name AS owner_middle_name,
+        u.last_name AS owner_last_name,
         u.email AS owner_email,
         u.phone AS owner_phone,
         u.region AS owner_region,
@@ -157,8 +164,8 @@ router.get('/alerts/device-checks', async (req, res) => {
       SELECT 
         dcl.*, 
         d.brand, d.model, d.imei, d.serial,
-        owner.name AS owner_name, owner.email AS owner_email, owner.phone AS owner_phone, owner.region AS owner_region,
-        checker.name AS checker_name, checker.email AS checker_email, checker.phone AS checker_phone
+        owner.name AS owner_name, owner.first_name AS owner_first_name, owner.middle_name AS owner_middle_name, owner.last_name AS owner_last_name, owner.email AS owner_email, owner.phone AS owner_phone, owner.region AS owner_region,
+        checker.name AS checker_name, checker.first_name AS checker_first_name, checker.middle_name AS checker_middle_name, checker.last_name AS checker_last_name, checker.email AS checker_email, checker.phone AS checker_phone
       FROM device_check_logs dcl
       LEFT JOIN devices d ON dcl.device_id = d.id
       LEFT JOIN users owner ON d.user_id = owner.id
@@ -226,11 +233,17 @@ router.get('/cases', async (req, res) => {
         d.serial,
         d.color,
         u.name as owner_name,
+        u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name,
+        u.last_name as owner_last_name,
         u.email as owner_email,
         u.phone as owner_phone,
         u.region,
         lea.agency_name,
         reporter.name as reporter_name,
+        reporter.first_name as reporter_first_name,
+        reporter.middle_name as reporter_middle_name,
+        reporter.last_name as reporter_last_name,
         reporter.email as reporter_email
       FROM reports r
       JOIN devices d ON r.device_id = d.id
@@ -283,14 +296,14 @@ router.get('/device-search', async (req, res) => {
     if (serial) { conditions.push('d.serial LIKE ?'); params.push(`%${serial}%`); }
     if (brand) { conditions.push('d.brand LIKE ?'); params.push(`%${brand}%`); }
     if (model) { conditions.push('d.model LIKE ?'); params.push(`%${model}%`); }
-    if (owner_name) { conditions.push('u.name LIKE ?'); params.push(`%${owner_name}%`); }
+    if (owner_name) { conditions.push('(u.name LIKE ? OR u.first_name LIKE ? OR u.middle_name LIKE ? OR u.last_name LIKE ?)'); params.push(`%${owner_name}%`, `%${owner_name}%`, `%${owner_name}%`, `%${owner_name}%`); }
     if (owner_email) { conditions.push('u.email LIKE ?'); params.push(`%${owner_email}%`); }
     if (region) { conditions.push('u.region LIKE ?'); params.push(`%${region}%`); }
     if (status && status !== 'all') { conditions.push('d.status = ?'); params.push(status); }
 
     const sql = `
       SELECT d.id, d.brand, d.model, d.imei, d.serial, d.status, d.created_at,
-        u.name as owner_name, u.email as owner_email, u.phone as owner_phone, u.region as owner_region,
+        u.name as owner_name, u.first_name as owner_first_name, u.middle_name as owner_middle_name, u.last_name as owner_last_name, u.email as owner_email, u.phone as owner_phone, u.region as owner_region,
         (SELECT MAX(created_at) FROM device_check_logs WHERE device_id = d.id) as last_check_at,
         (SELECT COUNT(*) FROM reports WHERE device_id = d.id) as report_count
       FROM devices d
@@ -344,7 +357,7 @@ router.get('/recovery', async (req, res) => {
       SELECT
         r.id, r.case_id, r.report_type, r.status, r.description as notes, r.created_at, r.updated_at,
         d.brand as device_brand, d.model as device_model, d.imei, d.serial,
-        u.name as owner_name, u.email as owner_email, u.phone as owner_phone,
+        u.name as owner_name, u.first_name as owner_first_name, u.middle_name as owner_middle_name, u.last_name as owner_last_name, u.email as owner_email, u.phone as owner_phone,
         (SELECT name FROM users WHERE id = r.assigned_lea_id) as recovered_by,
         (SELECT updated_at FROM reports WHERE id = r.id AND status = 'resolved') as recovered_at
       FROM reports r
@@ -385,6 +398,9 @@ router.get('/devices/:id', async (req, res) => {
         d.*, 
         u.id as owner_id,
         u.name as owner_name,
+        u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name,
+        u.last_name as owner_last_name,
         u.email as owner_email,
         u.phone as owner_phone,
         u.region as owner_region
@@ -410,6 +426,9 @@ router.get('/devices/:id', async (req, res) => {
         r.description,
         r.created_at,
         reporter.name as reporter_name,
+        reporter.first_name as reporter_first_name,
+        reporter.middle_name as reporter_middle_name,
+        reporter.last_name as reporter_last_name,
         reporter.email as reporter_email
       FROM reports r
       LEFT JOIN users reporter ON r.reporter_id = reporter.id
@@ -422,7 +441,13 @@ router.get('/devices/:id', async (req, res) => {
       SELECT 
         dt.*,
         u_from.name as from_user_name,
-        u_to.name as to_user_name
+        u_from.first_name as from_user_first_name,
+        u_from.middle_name as from_user_middle_name,
+        u_from.last_name as from_user_last_name,
+        u_to.name as to_user_name,
+        u_to.first_name as to_user_first_name,
+        u_to.middle_name as to_user_middle_name,
+        u_to.last_name as to_user_last_name
       FROM device_transfers dt
       LEFT JOIN users u_from ON dt.from_user_id = u_from.id
       LEFT JOIN users u_to ON dt.to_user_id = u_to.id
@@ -434,7 +459,10 @@ router.get('/devices/:id', async (req, res) => {
     const verification_history = await Database.query(`
       SELECT 
         dv.*,
-        uver.name as verified_by_name
+        uver.name as verified_by_name,
+        uver.first_name as verified_by_first_name,
+        uver.middle_name as verified_by_middle_name,
+        uver.last_name as verified_by_last_name
       FROM device_verifications dv
       LEFT JOIN users uver ON dv.verified_by = uver.id
       WHERE dv.device_id = ?
@@ -445,7 +473,10 @@ router.get('/devices/:id', async (req, res) => {
     const activity_logs = await Database.query(`
       SELECT 
         al.*,
-        ulog.name as user_name
+        ulog.name as user_name,
+        ulog.first_name as user_first_name,
+        ulog.middle_name as user_middle_name,
+        ulog.last_name as user_last_name
       FROM audit_logs al
       LEFT JOIN users ulog ON al.user_id = ulog.id
       WHERE al.table_name = 'devices' AND al.record_id = ?
@@ -488,6 +519,9 @@ router.get('/cases/:caseId', async (req, res) => {
         d.device_image_url,
         d.proof_url,
         u.name as owner_name,
+        u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name,
+        u.last_name as owner_last_name,
         u.email as owner_email,
         u.phone as owner_phone,
         u.region,
@@ -495,6 +529,9 @@ router.get('/cases/:caseId', async (req, res) => {
         lea.contact_email as lea_email,
         lea.contact_phone as lea_phone,
         reporter.name as reporter_name,
+        reporter.first_name as reporter_first_name,
+        reporter.middle_name as reporter_middle_name,
+        reporter.last_name as reporter_last_name,
         reporter.email as reporter_email,
         reporter.phone as reporter_phone
       FROM reports r
@@ -514,7 +551,10 @@ router.get('/cases/:caseId', async (req, res) => {
     const caseHistory = await Database.query(`
       SELECT 
         al.*,
-        u.name as user_name
+        u.name as user_name,
+        u.first_name as user_first_name,
+        u.middle_name as user_middle_name,
+        u.last_name as user_last_name
       FROM audit_logs al
       LEFT JOIN users u ON al.user_id = u.id
       WHERE al.table_name = 'reports' AND al.record_id = ?
@@ -646,7 +686,7 @@ router.post('/cases/:caseId/notes', async (req, res) => {
     const reportCase = caseDetails[0];
     const existingNotes = reportCase.lea_notes || '';
     const timestamp = new Date().toISOString();
-    const newNote = `[${timestamp}] ${req.user.name}: ${notes.trim()}`;
+    const newNote = `[${timestamp}] ${getDisplayName(req.user)}: ${notes.trim()}`;
     const updatedNotes = existingNotes ? `${existingNotes}\n\n${newNote}` : newNote;
 
     // Update case with new notes
@@ -761,6 +801,9 @@ router.get('/export/cases', async (req, res) => {
         d.imei,
         d.serial,
         u.name as owner_name,
+        u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name,
+        u.last_name as owner_last_name,
         u.region,
         lea.agency_name
       FROM reports r
@@ -774,7 +817,7 @@ router.get('/export/cases', async (req, res) => {
     // Generate CSV
     const csvHeader = 'Case ID,Type,Status,Occurred At,Location,Device,IMEI,Serial,Owner,Region,LEA Agency,Created At\n';
     const csvRows = cases.map(c => 
-      `"${c.case_id}","${c.report_type}","${c.status}","${c.occurred_at}","${c.location || ''}","${c.brand} ${c.model}","${c.imei || ''}","${c.serial || ''}","${c.owner_name}","${c.region}","${c.agency_name || ''}","${c.created_at}"`
+      `"${c.case_id}","${c.report_type}","${c.status}","${c.occurred_at}","${c.location || ''}","${c.brand} ${c.model}","${c.imei || ''}","${c.serial || ''}","${getDisplayName(c)}","${c.region}","${c.agency_name || ''}","${c.created_at}"`
     ).join('\n');
 
     const csv = csvHeader + csvRows;

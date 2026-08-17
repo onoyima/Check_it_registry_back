@@ -4,6 +4,7 @@ const Database = require('../config');
 const EmailVerificationService = require('../services/EmailVerificationService');
 const OTPService = require('../services/OTPService');
 const DeviceSecurityService = require('../services/DeviceSecurityService');
+const { getDisplayName, buildUserNameFields } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -22,7 +23,7 @@ const authenticateToken = async (req, res, next) => {
     // Get user from database
     const user = await Database.selectOne(
       'users',
-      'id, name, email, role, region',
+      'id, name, first_name, middle_name, last_name, email, role, region',
       'id = ?',
       [decoded.id]
     );
@@ -44,18 +45,22 @@ router.post('/register', async (req, res) => {
   // Helper to perform registration after optional file parsing
   const handleRegister = async (req, res) => {
     try {
-      const { name, email, password, phone, region, role } = req.body;
+      const { name, first_name, middle_name, last_name, email, password, phone, region, role } = req.body;
 
-      // Validation
-      if (!name || !email || !password) {
+      // Build name fields (supports both legacy 'name' and new split fields)
+      const nameFields = buildUserNameFields({ name, first_name, middle_name, last_name });
+      const displayName = getDisplayName(nameFields);
+
+      // Validation - require either 'name' or 'first_name'
+      if (!displayName || displayName.length < 2) {
         return res.status(400).json({ 
-          error: 'Name, email, and password are required' 
+          error: 'Name is required and must be at least 2 characters long' 
         });
       }
 
-      if (name.trim().length < 2) {
+      if (!email || !password) {
         return res.status(400).json({ 
-          error: 'Name must be at least 2 characters long' 
+          error: 'Email and password are required' 
         });
       }
 
@@ -77,12 +82,22 @@ router.post('/register', async (req, res) => {
         });
       }
 
-      // Check if user already exists
+      // Check if user already exists by email
       const existing = await Database.selectOne('users', 'id', 'email = ?', [email.toLowerCase().trim()]);
       if (existing) {
         return res.status(409).json({ 
           error: 'An account with this email already exists. Please use a different email or try logging in.' 
         });
+      }
+
+      // Check if user already exists by phone (phone is a unique identifier)
+      if (phone && phone.trim()) {
+        const existingPhone = await Database.selectOne('users', 'id', 'phone = ?', [phone.trim()]);
+        if (existingPhone) {
+          return res.status(409).json({ 
+            error: 'An account with this phone number already exists. Please use a different phone number or try logging in.' 
+          });
+        }
       }
 
       // Hash password
@@ -92,12 +107,12 @@ router.post('/register', async (req, res) => {
       const userId = Database.generateUUID();
       const userData = {
         id: userId,
-        name: name.trim(),
+        ...nameFields,
         email: email.toLowerCase().trim(),
         password_hash: passwordHash,
         phone: phone?.trim() || null,
         region: region?.trim() || 'default',
-        role: ['user', 'admin', 'lea'].includes(role) ? role : 'user',
+        role: ['user', 'admin', 'lea', 'business'].includes(role) ? role : 'user',
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -113,6 +128,32 @@ router.post('/register', async (req, res) => {
       }
 
       await Database.insert('users', userData);
+
+      // If business registration, create business profile
+      if (userData.role === 'business') {
+        const {
+          registrationNumber, businessName: bizName,
+          sector, country, city, address, phone: bizPhone
+        } = req.body;
+        if (registrationNumber) {
+          await Database.insert('business_profiles', {
+            id: Database.generateUUID(),
+            user_id: userId,
+            business_name: bizName || displayName,
+            business_registration_number: registrationNumber,
+            business_type: 'other',
+            business_address: address || null,
+            business_phone: bizPhone || phone?.trim() || null,
+            business_email: email.toLowerCase().trim(),
+            country: country || null,
+            city: city || null,
+            sector: sector || null,
+            verification_status: 'pending',
+            created_at: new Date(),
+            updated_at: new Date(),
+          });
+        }
+      }
 
       // Generate JWT
       const token = Database.generateJWT({ id: userId, email: userData.email, role: userData.role });
@@ -130,7 +171,7 @@ router.post('/register', async (req, res) => {
         const NotificationService = require('../services/NotificationService');
         const EmailTemplate = require('../services/EmailTemplate');
         const welcomeContent = `
-          <p>Hello <strong>${userData.name}</strong>,</p>
+          <p>Hello <strong>${userData.name || displayName}</strong>,</p>
           <p>Welcome to <strong>Prove Ownership</strong>, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
           <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 20px; border-radius: 8px; margin: 25px 0;">
             <h3 style="color: #1E40AF; margin: 0 0 12px; font-size: 16px;">Get Started in 3 Easy Steps</h3>
@@ -169,7 +210,7 @@ router.post('/register', async (req, res) => {
       // Return user data (without password)
       const user = await Database.selectOne(
         'users',
-        'id, name, email, role, region, verified_at, created_at, profile_image_url',
+        'id, name, first_name, middle_name, last_name, email, role, region, verified_at, created_at, profile_image_url',
         'id = ?',
         [userId]
       );
@@ -252,7 +293,7 @@ router.post('/login', async (req, res) => {
     // Get user with additional security fields
     const user = await Database.selectOne(
       'users',
-      'id, name, email, password_hash, role, region, verified_at, two_factor_enabled, login_count',
+      'id, name, first_name, middle_name, last_name, email, password_hash, role, region, verified_at, two_factor_enabled, login_count',
       'email = ?',
       [email.toLowerCase().trim()]
     );
@@ -411,7 +452,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     const user = await Database.selectOne(
       'users',
-      'id, name, email, role, region, phone, profile_image_url, verified_photo_url, verified_at, created_at, login_count, last_login_at, kyc_status, is_verified, caution_flag',
+      'id, name, first_name, middle_name, last_name, email, role, region, phone, profile_image_url, verified_photo_url, verified_at, created_at, login_count, last_login_at, kyc_status, is_verified, caution_flag',
       'id = ?',
       [req.user.id]
     );
@@ -426,15 +467,27 @@ router.get('/me', authenticateToken, async (req, res) => {
 // PUT /api/auth/profile - Update user profile
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
-    const { name, phone, region } = req.body;
+    const { name, first_name, middle_name, last_name, phone, region } = req.body;
     const userId = req.user.id;
 
-    if (!name || name.trim().length < 2) {
+    // Build name fields from either legacy or new fields
+    const nameFields = buildUserNameFields({ name, first_name, middle_name, last_name });
+    const displayName = getDisplayName(nameFields);
+
+    if (!displayName || displayName.trim().length < 2) {
       return res.status(400).json({ error: 'Name must be at least 2 characters long' });
     }
 
+    // Check phone uniqueness if changing
+    if (phone && phone.trim()) {
+      const existingPhone = await Database.selectOne('users', 'id', 'phone = ? AND id != ?', [phone.trim(), userId]);
+      if (existingPhone) {
+        return res.status(409).json({ error: 'This phone number is already associated with another account' });
+      }
+    }
+
     const updateData = {
-      name: name.trim(),
+      ...nameFields,
       phone: phone ? phone.trim() : null,
       region: region ? region.trim() : null,
       updated_at: new Date()
@@ -456,7 +509,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
     // Return updated user
     const updatedUser = await Database.selectOne(
       'users',
-      'id, name, email, role, region, phone, profile_image_url, verified_at, created_at, kyc_status, is_verified, caution_flag',
+      'id, name, first_name, middle_name, last_name, email, role, region, phone, profile_image_url, verified_at, created_at, kyc_status, is_verified, caution_flag',
       'id = ?',
       [userId]
     );
@@ -555,7 +608,7 @@ router.post('/request-password-reset', async (req, res) => {
     }
 
     // Find user
-    const user = await Database.selectOne('users', 'id, name', 'email = ?', [email.toLowerCase().trim()]);
+    const user = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name', 'email = ?', [email.toLowerCase().trim()]);
     
     if (!user) {
       // Don't reveal if email exists or not for security
@@ -620,7 +673,7 @@ router.post('/reset-password', async (req, res) => {
     }
 
     // Find user
-    const user = await Database.selectOne('users', 'id, name', 'email = ?', [email.toLowerCase().trim()]);
+    const user = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name', 'email = ?', [email.toLowerCase().trim()]);
     
     if (!user) {
       return res.status(400).json({ error: 'Invalid email or OTP code' });
@@ -683,7 +736,7 @@ router.post('/reset-password', async (req, res) => {
       const NotificationService = require('../services/NotificationService');
       const EmailTemplate = require('../services/EmailTemplate');
       const content = `
-        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Hello <strong>${getDisplayName(user)}</strong>,</p>
         <p>Your password has been successfully reset.</p>
         <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
           <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
@@ -763,7 +816,7 @@ router.post('/verify-device', async (req, res) => {
     // Get user data
     const user = await Database.selectOne(
       'users',
-      'id, name, email, role, region, verified_at, login_count',
+      'id, name, first_name, middle_name, last_name, email, role, region, verified_at, login_count',
       'id = ?',
       [user_id]
     );
@@ -942,24 +995,20 @@ router.post('/resend-device-otp', async (req, res) => {
   }
 });
 
-// DELETE /api/auth/account - Delete user account
+// DELETE /api/auth/account - Redirect to proper secure deletion flow
 router.delete('/account', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    await Database.transaction(async (connection) => {
-      await connection.execute('DELETE FROM user_sessions WHERE user_id = ?', [userId]);
-      await connection.execute('DELETE FROM notifications WHERE user_id = ?', [userId]);
-      await connection.execute('DELETE FROM api_keys WHERE user_id = ?', [userId]);
-      await connection.execute('UPDATE devices SET user_id = NULL, status = "unregistered" WHERE user_id = ?', [userId]);
-      await connection.execute('DELETE FROM users WHERE id = ?', [userId]);
-    });
-
-    res.json({ message: 'Account deleted successfully' });
-  } catch (error) {
-    console.error('Delete account error:', error);
-    res.status(500).json({ error: 'Failed to delete account' });
-  }
+  // This endpoint is deprecated. Account deletion must go through the secure flow:
+  // POST /api/profile/delete-account/verify-password
+  // POST /api/profile/delete-account/verify-security
+  // POST /api/profile/delete-account (with reason + OTP + confirmation)
+  res.status(400).json({
+    error: 'Account deletion must go through the secure deletion flow',
+    steps: [
+      'POST /api/profile/delete-account/verify-password',
+      'POST /api/profile/delete-account/verify-security',
+      'POST /api/profile/delete-account'
+    ]
+  });
 });
 
 module.exports = { router, authenticateToken };

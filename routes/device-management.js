@@ -5,6 +5,7 @@ const express = require("express");
 const Database = require("../config");
 const { authenticateToken } = require("../middleware/auth");
 const EmailTemplate = require("../services/EmailTemplate");
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -278,9 +279,9 @@ router.post("/", authenticateToken, async (req, res) => {
       });
       const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
       const verifyLink = `${FRONTEND_URL}/verify-device?token=${verifyToken}`;
-      const user = await Database.selectOne("users", "name, email", "id = ?", [userId]);
+      const user = await Database.selectOne("users", "name, email, first_name, middle_name, last_name", "id = ?", [userId]);
       const emailContent = `
-        <p>Hello ${user.name},</p>
+        <p>Hello ${getDisplayName(user)},</p>
         <p>We received a registration for your device: <strong>${brand} ${model}</strong>.</p>
         <p>To confirm you are the owner, please verify this device.</p>
         <p>If the button doesn't work, copy and paste this link into your browser:</p>
@@ -386,30 +387,28 @@ router.post("/:id/release", authenticateToken, async (req, res) => {
   }
 });
 
-// DELETE /api/device-management/:id - Delete device
+// DELETE /api/device-management/:id - Soft-delete device (archive, not destroy)
 router.delete("/:id", authenticateToken, async (req, res) => {
   try {
     const deviceId = req.params.id;
     const userId = req.user.id;
+    const { reason } = req.body;
 
-    // Verify ownership
-    const existing = await Database.selectOne("devices", "user_id", "id = ?", [
-      deviceId,
-    ]);
-
+    const existing = await Database.selectOne("devices", "user_id", "id = ?", [deviceId]);
     if (!existing || existing.user_id !== userId) {
-      return res.status(404).json({
-        error: "Device not found or unauthorized",
-      });
+      return res.status(404).json({ error: "Device not found or unauthorized" });
     }
 
-    // Delete device (cascade will handle reports)
-    await Database.delete("devices", "id = ?", [deviceId]);
+    const ArchiveService = require('../services/ArchiveService');
+    const result = await ArchiveService.softDeleteDevice(deviceId, userId, reason || 'User requested deletion');
 
-    res.json({ message: "Device deleted successfully" });
+    res.json({
+      message: "Device deleted successfully. Record has been archived.",
+      archiveId: result.archiveId
+    });
   } catch (error) {
     console.error("Error deleting device:", error);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: error.message || "Internal server error" });
   }
 });
 
@@ -464,13 +463,13 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
 
     // Send verification success email
     const NotificationService = require("../services/NotificationService");
-    const user = await Database.selectOne("users", "name, email", "id = ?", [
+    const user = await Database.selectOne("users", "name, email, first_name, middle_name, last_name", "id = ?", [
       userId,
     ]);
 
       const emailContent = `
         <h2>Verification Successful</h2>
-        <p>Hello ${user.name},</p>
+        <p>Hello ${getDisplayName(user)},</p>
         <p>Your device has been successfully verified:</p>
 
         <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
@@ -581,10 +580,10 @@ router.post('/verify-device-link', async (req, res) => {
 
     // Send verification success email
     const NotificationService = require('../services/NotificationService');
-    const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
+    const user = await Database.selectOne('users', 'name, email, first_name, middle_name, last_name', 'id = ?', [userId]);
       const emailContent = `
         <h2>Verification Successful</h2>
-        <p>Hello ${user.name},</p>
+        <p>Hello ${getDisplayName(user)},</p>
         <p>Your device has been successfully verified:</p>
         <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
           <h3>${device.brand} ${device.model}</h3>
@@ -658,229 +657,23 @@ router.post("/resend-verification", authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/device-management/report-stolen - Report device as stolen
+// POST /api/device-management/report-stolen - DEPRECATED
+// Use POST /api/report-management instead (redesigned flow with device selection,
+// payment, KYC, and proper notification logic)
 router.post("/report-stolen", authenticateToken, async (req, res) => {
-  try {
-    const {
-      device_id,
-      incident_date,
-      location,
-      description,
-      police_report_number,
-    } = req.body;
-    const userId = req.user.id;
-
-    if (!device_id) {
-      return res.status(400).json({ error: "Device ID is required" });
-    }
-
-    // Verify device belongs to user
-    const device = await Database.selectOne(
-      "devices",
-      "*",
-      "id = ? AND user_id = ?",
-      [device_id, userId]
-    );
-
-    if (!device) {
-      return res.status(404).json({ error: "Device not found" });
-    }
-
-    if (device.status === "stolen") {
-      return res
-        .status(400)
-        .json({ error: "Device is already reported as stolen" });
-    }
-
-    // Generate case ID
-    const caseId = "CASE-" + Date.now().toString(36).toUpperCase();
-
-    // Create report
-    const reportId = Database.generateUUID();
-    const reportData = {
-      id: reportId,
-      case_id: caseId,
-      device_id: device_id,
-      reporter_id: userId,
-      report_type: "stolen",
-      incident_date: incident_date ? new Date(incident_date) : new Date(),
-      location: location?.trim() || null,
-      description: description?.trim() || null,
-      police_report_number: police_report_number?.trim() || null,
-      status: "active",
-      created_at: new Date(),
-      updated_at: new Date(),
-    };
-
-    await Database.insert("reports", reportData);
-
-    // Update device status
-    await Database.update(
-      "devices",
-      {
-        status: "stolen",
-        updated_at: new Date(),
-      },
-      "id = ?",
-      [device_id]
-    );
-
-    // Send theft report email
-    const NotificationService = require("../services/NotificationService");
-    const user = await Database.selectOne("users", "name, email", "id = ?", [
-      userId,
-    ]);
-
-      const emailContent = `
-        <h2>Theft Report Confirmed</h2>
-        <p>Hello ${user.name},</p>
-        <p>Your device has been successfully reported as stolen:</p>
-
-        <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
-          <h3>${device.brand} ${device.model}</h3>
-          <p><strong>Case ID:</strong> ${caseId}</p>
-          <p><strong>IMEI:</strong> ${device.imei || "Not provided"}</p>
-          <p><strong>Serial:</strong> ${device.serial || "Not provided"}</p>
-          <p><strong>Status:</strong> <span style="color: #dc2626;">Stolen 🚨</span></p>
-        </div>
-
-        <p><strong>What happens next:</strong></p>
-        <ul>
-          <li>Your device is now marked as stolen in our database</li>
-          <li>Law enforcement agencies have been notified</li>
-          <li>We'll monitor for any attempts to register this device</li>
-          <li>You'll be contacted if the device is found</li>
-        </ul>
-
-        <p>Keep your case ID <strong>${caseId}</strong> for reference.</p>
-      `;
-    try {
-      await NotificationService.sendEmailDirect(
-        user.email,
-        `Device Reported Stolen - Case ${caseId}`,
-        EmailTemplate.wrapContent('Device Reported Stolen', emailContent)
-      );
-    } catch (emailErr) {
-      console.warn("Failed to send theft report email:", emailErr.message);
-    }
-
-    // Log theft report
-    await Database.logAudit(
-      userId,
-      "DEVICE_REPORTED_STOLEN",
-      "devices",
-      device_id,
-      { status: device.status },
-      { status: "stolen", case_id: caseId },
-      req.ip
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "Device reported as stolen successfully",
-      case_id: caseId,
-      report: reportData,
-    });
-  } catch (error) {
-    console.error("Report stolen error:", error);
-    res.status(500).json({ error: "Failed to report device as stolen" });
-  }
+  res.status(410).json({ 
+    error: 'This endpoint is deprecated. Use POST /api/report-management instead.',
+    redirect: '/api/report-management'
+  });
 });
 
-// POST /api/device-management/report-found - Report finding a device
+// POST /api/device-management/report-found - DEPRECATED
+// Use POST /api/found-device/report instead (public found device flow)
 router.post("/report-found", authenticateToken, async (req, res) => {
-  try {
-    const { device_id, found_location, finder_contact, description } = req.body;
-    const userId = req.user.id;
-
-    if (!device_id) {
-      return res.status(400).json({ error: "Device ID is required" });
-    }
-
-    // Verify device exists and is reported as stolen
-    const device = await Database.selectOne(
-      "devices",
-      "*",
-      "id = ? AND status = ?",
-      [device_id, "stolen"]
-    );
-
-    if (!device) {
-      return res.status(404).json({
-        error: "Device not found or not reported as stolen",
-      });
-    }
-
-    // Generate case ID for found report
-    const caseId = "FOUND-" + Date.now().toString(36).toUpperCase();
-
-    // Create found report
-    const reportId = Database.generateUUID();
-    const reportData = {
-      id: reportId,
-      case_id: caseId,
-      device_id: device_id,
-      reporter_id: userId,
-      report_type: "found",
-      location: found_location?.trim() || null,
-      description: description?.trim() || null,
-      finder_contact: finder_contact?.trim() || null,
-      status: "pending_verification",
-      created_at: new Date(),
-      updated_at: new Date(),
-    };
-
-    await Database.insert("reports", reportData);
-
-    // Notify device owner
-    const owner = await Database.selectOne("users", "name, email", "id = ?", [
-      device.user_id,
-    ]);
-    const NotificationService = require("../services/NotificationService");
-
-      const emailContent = `
-        <h2>Great News!</h2>
-        <p>Hello ${owner.name},</p>
-        <p>Someone has reported finding a device matching your stolen ${device.brand} ${device.model}:</p>
-
-        <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
-          <h3>Found Device Report</h3>
-          <p><strong>Case ID:</strong> ${caseId}</p>
-          <p><strong>Found Location:</strong> ${found_location || "Not specified"}</p>
-          <p><strong>Finder Contact:</strong> ${finder_contact || "Available through support"}</p>
-          <p><strong>Description:</strong> ${description || "No additional details"}</p>
-        </div>
-
-        <p><strong>Next Steps:</strong></p>
-        <ul>
-          <li>Our team will verify this report</li>
-          <li>We'll coordinate with law enforcement</li>
-          <li>You'll be contacted to arrange device recovery</li>
-          <li>Please have your proof of ownership ready</li>
-        </ul>
-
-        <p>Case ID: <strong>${caseId}</strong></p>
-      `;
-    try {
-      await NotificationService.sendEmailDirect(
-        owner.email,
-        `Your Device May Have Been Found - Case ${caseId}`,
-        EmailTemplate.wrapContent('Device Possibly Found!', emailContent)
-      );
-    } catch (emailErr) {
-      console.warn("Failed to send found device notification:", emailErr.message);
-    }
-
-    res.status(201).json({
-      success: true,
-      message:
-        "Device found report submitted successfully. The owner has been notified.",
-      case_id: caseId,
-    });
-  } catch (error) {
-    console.error("Report found error:", error);
-    res.status(500).json({ error: "Failed to report device as found" });
-  }
+  res.status(410).json({ 
+    error: 'This endpoint is deprecated. Use POST /api/found-device/report instead.',
+    redirect: '/api/found-device/report'
+  });
 });
 
 // POST /api/device-management/bulk - Bulk register devices

@@ -5,8 +5,9 @@ const SecurityService = require('../services/SecurityService');
 const RevenueService = require('../services/RevenueService');
 const NINVerificationService = require('../services/NINVerificationService');
 const CACVerificationService = require('../services/CACVerificationService');
+const BusinessVerificationService = require('../services/BusinessVerificationService');
 const FraudDetectionService = require('../services/FraudDetectionService');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, requireRole } = require('../middleware/auth');
 
 router.use(authenticateToken);
 
@@ -173,12 +174,13 @@ router.post('/nin/verify', async (req, res) => {
 
 router.post('/cac/verify', async (req, res) => {
   try {
-    const { rcNumber, businessName } = req.body;
+    const { rcNumber, businessName, companyType } = req.body;
     if (!rcNumber) return res.status(400).json({ error: 'RC Number is required' });
 
-    const fee = await RevenueService.getFee('business_verification_fee');
+    const fee = await BusinessVerificationService.getVerificationFee();
 
     const { pay_by_pass } = req.body;
+    let feeTransactionId = null;
     if (!pay_by_pass) {
       const invoiceId = await RevenueService.createPaymentInvoice(
         req.user.id, fee, 'business_verification',
@@ -192,19 +194,103 @@ router.post('/cac/verify', async (req, res) => {
         purpose: 'Business Verification Fee',
         message: `Payment of ₦${fee} required for CAC verification.`
       });
+    } else {
+      feeTransactionId = await RevenueService.chargeForCheck(req.user.id, fee, pay_by_pass);
+      await RevenueService.markInvoicePaid(pay_by_pass);
     }
 
-    const result = await CACVerificationService.verifyAndLink(req.user.id, rcNumber, businessName);
+    const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'BUSINESS_VERIFY', {
+      ipAddress: req.clientIp
+    });
+    if (fraudCheck.blocked) {
+      return res.status(403).json({ error: 'Action blocked due to security concerns.' });
+    }
+
+    const result = await BusinessVerificationService.verifyAndRecord(
+      req.user.id, rcNumber, businessName, companyType,
+      pay_by_pass, feeTransactionId
+    );
 
     await SecurityService.logCriticalAction(req.user.id, 'BUSINESS_VERIFY', {
-      success: true,
-      reference: result.verificationId,
+      success: result.success,
+      reference: result.attemptId,
       ipAddress: req.clientIp
     });
 
     res.json(result);
   } catch (error) {
+    console.error('CAC verify error:', error);
     res.status(400).json({ error: error.message });
+  }
+});
+
+router.get('/cac/history', async (req, res) => {
+  try {
+    const history = await BusinessVerificationService.getVerificationHistory(req.user.id);
+    res.json({ history });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch verification history' });
+  }
+});
+
+router.get('/cac/status', async (req, res) => {
+  try {
+    const status = await BusinessVerificationService.getVerificationStatus(req.user.id);
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch verification status' });
+  }
+});
+
+// Admin: verification queue
+router.get('/admin/verification-queue', requireRole(['admin', 'super_admin']), async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
+    const statusFilter = req.query.status || 'pending';
+
+    const items = await Database.query(`
+      SELECT avq.*, u.name as submitter_name, u.email as submitter_email
+      FROM admin_verification_queue avq
+      LEFT JOIN users u ON avq.submitted_by = u.id
+      WHERE avq.item_type = 'business' AND avq.status = ?
+      ORDER BY
+        CASE avq.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+        avq.created_at DESC
+      LIMIT ? OFFSET ?
+    `, [statusFilter, limit, offset]);
+
+    const [{ total }] = await Database.query(
+      `SELECT COUNT(*) as total FROM admin_verification_queue WHERE item_type = 'business' AND status = ?`,
+      [statusFilter]
+    );
+
+    res.json({ data: items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch verification queue' });
+  }
+});
+
+router.put('/admin/verification-queue/:id', requireRole(['admin', 'super_admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, admin_notes } = req.body;
+    const allowedStatuses = ['pending', 'in_review', 'approved', 'rejected', 'requires_info'];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const updateData = { status, reviewed_by: req.user.id, reviewed_at: new Date() };
+    if (admin_notes) updateData.admin_notes = admin_notes;
+
+    await Database.update('admin_verification_queue', updateData, 'id = ?', [id]);
+    await Database.logAudit(req.user.id, 'VERIFICATION_QUEUE_UPDATED', 'admin_verification_queue', id,
+      null, { status, admin_notes }, req.ip);
+
+    res.json({ success: true, message: `Item marked as ${status}` });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update queue item' });
   }
 });
 

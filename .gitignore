@@ -37,6 +37,9 @@ server/uploads/
 server/coverage/
 server/jest-results/
 
+# Uploads
+uploads/
+
 # IDE
 .vscode/
 test/

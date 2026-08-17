@@ -3,6 +3,7 @@ const express = require('express');
 const Database = require('../config');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -100,6 +101,9 @@ router.get('/verification-queue', async (req, res) => {
       SELECT 
         d.*,
         u.name as owner_name,
+        u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name,
+        u.last_name as owner_last_name,
         u.email as owner_email,
         u.phone as owner_phone
       FROM devices d
@@ -167,6 +171,9 @@ router.get('/devices', async (req, res) => {
       SELECT 
         d.*, 
         u.name as owner_name, 
+        u.first_name as owner_first_name, 
+        u.middle_name as owner_middle_name, 
+        u.last_name as owner_last_name, 
         u.email as owner_email, 
         u.phone as owner_phone
       FROM devices d
@@ -211,6 +218,9 @@ router.get('/reported-devices', async (req, res) => {
         d.serial,
         d.status,
         u.name AS owner_name,
+        u.first_name AS owner_first_name,
+        u.middle_name AS owner_middle_name,
+        u.last_name AS owner_last_name,
         u.email AS owner_email,
         u.phone AS owner_phone,
         MAX(r.created_at) AS latest_report_at,
@@ -255,8 +265,8 @@ router.get('/alerts/device-checks', async (req, res) => {
       SELECT 
         dcl.*, 
         d.brand, d.model, d.imei, d.serial,
-        owner.name AS owner_name, owner.email AS owner_email, owner.phone AS owner_phone,
-        checker.name AS checker_name, checker.email AS checker_email, checker.phone AS checker_phone
+        owner.name AS owner_name, owner.first_name AS owner_first_name, owner.middle_name AS owner_middle_name, owner.last_name AS owner_last_name, owner.email AS owner_email, owner.phone AS owner_phone,
+        checker.name AS checker_name, checker.first_name AS checker_first_name, checker.middle_name AS checker_middle_name, checker.last_name AS checker_last_name, checker.email AS checker_email, checker.phone AS checker_phone
       FROM device_check_logs dcl
       LEFT JOIN devices d ON dcl.device_id = d.id
       LEFT JOIN users owner ON d.user_id = owner.id
@@ -413,7 +423,7 @@ router.post('/resend-device-verification/:id', async (req, res) => {
     }
 
     // Get owner
-    const owner = await Database.selectOne('users', 'id, name, email', 'id = ?', [device.user_id]);
+    const owner = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name, email', 'id = ?', [device.user_id]);
     if (!owner || !owner.email) {
       return res.status(400).json({ error: 'Device owner email not available' });
     }
@@ -427,7 +437,7 @@ router.post('/resend-device-verification/:id', async (req, res) => {
     const NotificationService = require('../services/NotificationService');
     const EmailTemplate = require('../services/EmailTemplate');
     const content = `
-      <p>Hello <strong>${owner.name}</strong>,</p>
+      <p>Hello <strong>${getDisplayName(owner)}</strong>,</p>
       <p>This is a friendly reminder to verify ownership of your device:</p>
       <div style="background: #EEF2FF; border-left: 4px solid #2563EB; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
         <p style="margin: 0; color: #1E40AF; font-weight: 600;">${device.brand} ${device.model}</p>
@@ -493,6 +503,9 @@ router.get('/audit-logs', async (req, res) => {
       SELECT 
         al.*,
         u.name as user_name,
+        u.first_name as user_first_name,
+        u.middle_name as user_middle_name,
+        u.last_name as user_last_name,
         u.email as user_email
       FROM audit_logs al
       LEFT JOIN users u ON al.user_id = u.id
@@ -542,7 +555,7 @@ router.get('/users', async (req, res) => {
 
     const users = await Database.query(`
       SELECT 
-        id, name, email, role, region, verified_at, created_at,
+        id, name, first_name, middle_name, last_name, email, role, region, verified_at, created_at,
         (SELECT COUNT(*) FROM devices WHERE user_id = users.id) as device_count,
         (SELECT COUNT(*) FROM reports WHERE reporter_id = users.id) as report_count
       FROM users
@@ -607,7 +620,7 @@ router.put('/users/:id/role', async (req, res) => {
 
     const updatedUser = await Database.selectOne(
       'users',
-      'id, name, email, role, region, verified_at, created_at',
+      'id, name, first_name, middle_name, last_name, email, role, region, verified_at, created_at',
       'id = ?',
       [userId]
     );

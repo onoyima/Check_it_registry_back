@@ -401,6 +401,223 @@ const MIGRATIONS = [
       }
     }
   },
+  {
+    name: '015_business_verification_system',
+    sql: [
+      // Business profiles table
+      `CREATE TABLE IF NOT EXISTS business_profiles (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        business_name VARCHAR(255) NOT NULL,
+        business_type VARCHAR(64) DEFAULT 'other',
+        business_registration_number VARCHAR(100) NOT NULL,
+        tax_id VARCHAR(50) DEFAULT NULL,
+        business_address TEXT DEFAULT NULL,
+        business_phone VARCHAR(20) DEFAULT NULL,
+        business_email VARCHAR(255) DEFAULT NULL,
+        website VARCHAR(255) DEFAULT NULL,
+        state VARCHAR(100) DEFAULT NULL,
+        city VARCHAR(100) DEFAULT NULL,
+        country VARCHAR(100) DEFAULT NULL,
+        business_license_url TEXT DEFAULT NULL,
+        tax_certificate_url TEXT DEFAULT NULL,
+        expected_device_volume VARCHAR(20) DEFAULT NULL,
+        business_description TEXT DEFAULT NULL,
+        sector VARCHAR(64) DEFAULT NULL,
+        verification_status ENUM('pending','verified','rejected') DEFAULT 'pending',
+        verified_at TIMESTAMP NULL,
+        verified_by VARCHAR(36) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX bp_user_id (user_id),
+        INDEX bp_verification_status (verification_status),
+        INDEX bp_reg_number (business_registration_number)
+      )`,
+      // Immutable verification attempt history
+      `CREATE TABLE IF NOT EXISTS business_verification_attempts (
+        id VARCHAR(36) PRIMARY KEY,
+        business_profile_id VARCHAR(36) NOT NULL,
+        user_id VARCHAR(36) NOT NULL,
+        rc_number VARCHAR(100) NOT NULL,
+        company_name_submitted VARCHAR(255) DEFAULT NULL,
+        fee_amount DECIMAL(15,2) NOT NULL,
+        fee_transaction_id VARCHAR(36) DEFAULT NULL,
+        payment_reference VARCHAR(128) DEFAULT NULL,
+        provider VARCHAR(50) NOT NULL DEFAULT 'prembly',
+        platform_data_snapshot JSON DEFAULT NULL,
+        provider_data_snapshot JSON DEFAULT NULL,
+        comparison_result JSON DEFAULT NULL,
+        status ENUM('pending','passed','failed','error') NOT NULL DEFAULT 'pending',
+        status_reason TEXT DEFAULT NULL,
+        admin_notified TINYINT(1) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX bva_profile_id (business_profile_id),
+        INDEX bva_user_id (user_id),
+        INDEX bva_status (status)
+      )`,
+      // Admin verification queue
+      `CREATE TABLE IF NOT EXISTS admin_verification_queue (
+        id VARCHAR(36) PRIMARY KEY,
+        item_type ENUM('device','user','business','report') NOT NULL,
+        item_id VARCHAR(36) NOT NULL,
+        submitted_by VARCHAR(36) NOT NULL,
+        assigned_to VARCHAR(36) DEFAULT NULL,
+        priority ENUM('low','medium','high','urgent') DEFAULT 'medium',
+        status ENUM('pending','in_review','approved','rejected','requires_info') DEFAULT 'pending',
+        notes TEXT DEFAULT NULL,
+        admin_notes TEXT DEFAULT NULL,
+        verification_data JSON DEFAULT NULL,
+        reviewed_at TIMESTAMP NULL,
+        reviewed_by VARCHAR(36) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX avq_item_type_id (item_type, item_id),
+        INDEX avq_status (status),
+        INDEX avq_priority (priority)
+      )`,
+      // User payout columns
+      `ALTER TABLE users ADD COLUMN payout_bank_name VARCHAR(100) DEFAULT NULL`,
+      `ALTER TABLE users ADD COLUMN payout_account_number VARCHAR(20) DEFAULT NULL`,
+      `ALTER TABLE users ADD COLUMN payout_account_name VARCHAR(255) DEFAULT NULL`,
+      // Business fee settings
+      `INSERT IGNORE INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
+       VALUES (UUID(), 'business_verification_fee', '2500', 'number', 'Fee for CAC business verification', false)`,
+      `INSERT IGNORE INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
+       VALUES (UUID(), 'business_onboarding_fee', '5000', 'number', 'Fee for business customer onboarding', false)`,
+      `INSERT IGNORE INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
+       VALUES (UUID(), 'business_onboarding_commission_percent', '30', 'number', 'Commission percent for business on each onboarding', false)`,
+    ],
+    seed: async () => {
+      // Add FK constraints gracefully
+      await db.query('ALTER TABLE business_profiles ADD CONSTRAINT bp_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE').catch(() => {});
+      await db.query('ALTER TABLE business_verification_attempts ADD CONSTRAINT bva_fk_profile FOREIGN KEY (business_profile_id) REFERENCES business_profiles(id) ON DELETE CASCADE').catch(() => {});
+      await db.query('ALTER TABLE business_verification_attempts ADD CONSTRAINT bva_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE').catch(() => {});
+      await db.query('ALTER TABLE admin_verification_queue ADD CONSTRAINT avq_fk_submitted FOREIGN KEY (submitted_by) REFERENCES users(id) ON DELETE CASCADE').catch(() => {});
+
+      console.log('  ✓ Business verification system tables created');
+    }
+  },
+  {
+    name: '016_archive_softdelete_security_questions',
+    sql: [
+      // Add soft-delete columns to users
+      `ALTER TABLE users ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL`,
+      `ALTER TABLE users ADD COLUMN deletion_reason TEXT DEFAULT NULL`,
+      `ALTER TABLE users ADD COLUMN original_email VARCHAR(255) DEFAULT NULL`,
+      // Add soft-delete columns to devices
+      `ALTER TABLE devices ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL`,
+      `ALTER TABLE devices ADD COLUMN deletion_reason TEXT DEFAULT NULL`,
+      `ALTER TABLE devices ADD COLUMN original_imei VARCHAR(15) DEFAULT NULL`,
+      `ALTER TABLE devices ADD COLUMN original_serial VARCHAR(100) DEFAULT NULL`,
+      // Security questions table
+      `CREATE TABLE IF NOT EXISTS security_questions (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        question TEXT NOT NULL,
+        answer_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX sq_user (user_id)
+      )`,
+      // Account deletions archive table
+      `CREATE TABLE IF NOT EXISTS account_deletions (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        original_email VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255),
+        role VARCHAR(20),
+        deletion_reason TEXT,
+        security_question_verified TINYINT(1) DEFAULT 0,
+        otp_verified TINYINT(1) DEFAULT 0,
+        final_confirmation TINYINT(1) DEFAULT 0,
+        device_count INT DEFAULT 0,
+        report_count INT DEFAULT 0,
+        transfer_count INT DEFAULT 0,
+        transaction_count INT DEFAULT 0,
+        snapshot JSON,
+        deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        restored_at TIMESTAMP NULL DEFAULT NULL,
+        restored_by VARCHAR(36) DEFAULT NULL,
+        status ENUM('deleted','restored') DEFAULT 'deleted',
+        INDEX ad_user (user_id),
+        INDEX ad_status (status),
+        INDEX ad_deleted_at (deleted_at)
+      )`,
+      // Device deletions archive table
+      `CREATE TABLE IF NOT EXISTS device_deletions (
+        id VARCHAR(36) PRIMARY KEY,
+        device_id VARCHAR(36) NOT NULL,
+        user_id VARCHAR(36) NOT NULL,
+        original_imei VARCHAR(15),
+        original_serial VARCHAR(100),
+        brand VARCHAR(100),
+        model VARCHAR(100),
+        category VARCHAR(50),
+        status_before_delete VARCHAR(30),
+        deletion_reason TEXT,
+        report_count INT DEFAULT 0,
+        transfer_count INT DEFAULT 0,
+        snapshot JSON,
+        deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        restored_at TIMESTAMP NULL DEFAULT NULL,
+        restored_by VARCHAR(36) DEFAULT NULL,
+        status ENUM('deleted','restored') DEFAULT 'deleted',
+        INDEX dd_user (user_id),
+        INDEX dd_device (device_id),
+        INDEX dd_status (status)
+      )`,
+      // Data export audit table
+      `CREATE TABLE IF NOT EXISTS data_export_audit (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        export_type VARCHAR(50) NOT NULL,
+        status ENUM('requested','processing','completed','failed') DEFAULT 'requested',
+        file_path VARCHAR(500),
+        file_size BIGINT DEFAULT 0,
+        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP NULL DEFAULT NULL,
+        ip_address VARCHAR(45),
+        user_agent TEXT,
+        INDEX dea_user (user_id),
+        INDEX dea_status (status)
+      )`,
+      // Device ownership history table
+      `CREATE TABLE IF NOT EXISTS device_ownership_history (
+        id VARCHAR(36) PRIMARY KEY,
+        device_id VARCHAR(36) NOT NULL,
+        user_id VARCHAR(36) NOT NULL,
+        action ENUM('registered','transferred_in','transferred_out','deleted','restored') NOT NULL,
+        transfer_id VARCHAR(36) DEFAULT NULL,
+        metadata JSON,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX doh_device (device_id),
+        INDEX doh_user (user_id)
+      )`,
+    ],
+    seed: async () => {
+      // Add FK constraints gracefully
+      await db.query('ALTER TABLE security_questions ADD CONSTRAINT sq_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE').catch(() => {});
+      await db.query('ALTER TABLE account_deletions ADD CONSTRAINT ad_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL').catch(() => {});
+      await db.query('ALTER TABLE device_deletions ADD CONSTRAINT dd_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL').catch(() => {});
+      await db.query('ALTER TABLE data_export_audit ADD CONSTRAINT dea_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE').catch(() => {});
+      await db.query('ALTER TABLE device_ownership_history ADD CONSTRAINT doh_fk_device FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE').catch(() => {});
+      await db.query('ALTER TABLE device_ownership_history ADD CONSTRAINT doh_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL').catch(() => {});
+      // Seed default security questions in system_settings
+      const defaultQuestions = JSON.stringify([
+        "What was the name of your first pet?",
+        "What city were you born in?",
+        "What is your mother's maiden name?",
+        "What was the make of your first car?",
+        "What was the name of your primary school?",
+        "What is your favorite movie?",
+        "What is the name of your best friend?",
+        "What was your childhood nickname?"
+      ]);
+      await db.query(`INSERT IGNORE INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
+        VALUES (UUID(), 'security_questions', ?, 'json', 'Available security questions for account deletion', false)`, [defaultQuestions]);
+      console.log('  ✓ Archive, soft-delete, security questions, and ownership history tables created');
+    }
+  },
 ];
 
 async function runMigrations() {

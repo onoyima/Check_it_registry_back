@@ -3,6 +3,7 @@ const express = require('express');
 const Database = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const NotificationService = require('../services/NotificationService');
+const { getDisplayName } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -534,7 +535,7 @@ router.put('/users/:userId', async (req, res) => {
         'Account Details Updated',
         `
           <h2>Account Details Updated</h2>
-          <p>Hello ${updates.name || currentUser.name},</p>
+          <p>Hello ${getDisplayName(updates) || getDisplayName(currentUser)},</p>
           <p>Your account details have been updated by an administrator.</p>
           <p>If you did not request this change, please contact support immediately.</p>
         `,

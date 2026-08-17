@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const EscrowService = require('../services/EscrowService');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 // GET /api/escrow/buyer-orders — buyer's purchase history with escrow status
 router.get('/buyer-orders', authenticateToken, async (req, res) => {

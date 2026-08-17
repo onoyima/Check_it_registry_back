@@ -58,7 +58,7 @@ class RevenueService {
 
   static async getUserFreeCheckCount(userId) {
     const [{ count }] = await Database.query(
-      `SELECT COUNT(*) as count FROM device_check_logs WHERE checker_user_id = ? AND check_type = 'paid_check'`,
+      `SELECT COUNT(*) as count FROM device_check_logs WHERE checker_user_id = ? AND is_paid = 0`,
       [userId]
     );
     return count;
@@ -162,6 +162,54 @@ class RevenueService {
     const freeReportsPerDevice = await this.getFee('free_reports_per_device');
     const deviceReportCount = await this.getUserDeviceReportCount(userId, deviceId);
     return deviceReportCount >= freeReportsPerDevice;
+  }
+
+  /**
+   * Determine if a user's next report requires payment.
+   * Logic: Report #1 = paid, #2 = free, #3 = free, #4+ = paid.
+   * Count is per USER (across all devices), not per device.
+   * @returns {{ requiresPayment: boolean, reportNumber: number, amount?: number, currency?: string, reason?: string }}
+   */
+  static async shouldChargeForUserReport(userId) {
+    const [{ count: completedCount }] = await Database.query(
+      `SELECT COUNT(*) as count FROM reports 
+       WHERE reporter_id = ? AND status IN ('open', 'under_review', 'resolved')`,
+      [userId]
+    );
+
+    const reportNumber = completedCount + 1;
+    const freeAfterFirst = parseInt(await this.getFee('free_reports_after_first')) || 2;
+
+    // Report #1: always paid
+    if (completedCount === 0) {
+      const fee = await this.getFee('report_verification_fee');
+      return {
+        requiresPayment: true,
+        reportNumber: 1,
+        amount: fee,
+        currency: 'NGN',
+        reason: 'First report requires payment and identity verification'
+      };
+    }
+
+    // Reports #2 through #(1 + freeAfterFirst): free
+    if (completedCount <= freeAfterFirst) {
+      return {
+        requiresPayment: false,
+        reportNumber,
+        reason: 'Free report (included in your plan)'
+      };
+    }
+
+    // Report #(2 + freeAfterFirst)+: paid
+    const fee = await this.getFee('report_verification_fee');
+    return {
+      requiresPayment: true,
+      reportNumber,
+      amount: fee,
+      currency: 'NGN',
+      reason: 'Free reports exhausted. Payment required for this report.'
+    };
   }
 
   static async getActivePaymentProvider() {

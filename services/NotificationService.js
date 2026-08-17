@@ -2,6 +2,7 @@
 const { Resend } = require('resend');
 const Database = require("../config");
 const EmailTemplate = require("./EmailTemplate");
+const TermiiService = require('./TermiiService');
 
 class NotificationService {
   constructor() {
@@ -67,9 +68,17 @@ class NotificationService {
           result = await this.sendEmail(notification);
           break;
         case "sms":
-          // SMS channel deprecated — all notifications use email
-          console.log(`[NotificationService] SMS channel deprecated. Converting to email for: ${notification.recipient}`);
-          result = await this.sendEmail(notification);
+          try {
+            const smsResult = await TermiiService.sendSMS(notification.recipient, notification.message);
+            result = smsResult.success;
+            if (!smsResult.success) {
+              errorMessage = smsResult.reason || smsResult.error || 'SMS send failed';
+            }
+          } catch (smsError) {
+            console.error('[NotificationService] SMS send error:', smsError.message);
+            errorMessage = smsError.message;
+            result = false;
+          }
           break;
         case "push":
           result = await this.sendPush(notification);
@@ -162,9 +171,15 @@ class NotificationService {
     }
   }
 
-  // SMS channel deprecated — device check alerts use TermiiService directly
+  // SMS via Termii
   async sendSMS(notification) {
-    throw new Error('SMS channel deprecated. Use TermiiService for device check alerts.');
+    try {
+      const result = await TermiiService.sendSMS(notification.recipient, notification.message);
+      return result.success;
+    } catch (error) {
+      console.error('[NotificationService] SMS error:', error.message);
+      return false;
+    }
   }
 
   // Send push notification

@@ -2,6 +2,7 @@
 const Database = require('../config');
 const NotificationService = require('./NotificationService');
 const EmailTemplate = require('./EmailTemplate');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 class PaymentRecoveryService {
   constructor() {
@@ -254,6 +255,9 @@ class PaymentRecoveryService {
           d.serial,
           d.category,
           u.name as user_name,
+          u.first_name as user_first_name,
+          u.middle_name as user_middle_name,
+          u.last_name as user_last_name,
           u.email as user_email
         FROM recovery_services rs
         JOIN devices d ON rs.device_id = d.id
@@ -266,6 +270,12 @@ class PaymentRecoveryService {
       }
 
       const service = serviceDetails[0];
+      service.user_display_name = getDisplayName({
+        name: service.user_name,
+        first_name: service.user_first_name,
+        middle_name: service.user_middle_name,
+        last_name: service.user_last_name
+      });
 
       // Assign recovery agent
       const agent = await this.assignRecoveryAgent(service);
@@ -524,7 +534,7 @@ class PaymentRecoveryService {
 
         // Send refund notification
         try {
-          const user = await Database.selectOne('users', 'name, email', 'id = ?', [service.user_id]);
+          const user = await Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [service.user_id]);
           if (user && user.email) {
             await NotificationService.sendEmailDirect(
               user.email,
@@ -663,6 +673,9 @@ class PaymentRecoveryService {
           d.brand,
           d.model,
           u.name as user_name,
+          u.first_name as user_first_name,
+          u.middle_name as user_middle_name,
+          u.last_name as user_last_name,
           u.email as user_email,
           ra.name as agent_name
         FROM recovery_services rs
@@ -675,6 +688,12 @@ class PaymentRecoveryService {
       if (serviceDetails.length === 0) return;
 
       const service = serviceDetails[0];
+      service.user_display_name = getDisplayName({
+        name: service.user_name,
+        first_name: service.user_first_name,
+        middle_name: service.user_middle_name,
+        last_name: service.user_last_name
+      });
 
       await NotificationService.sendEmailDirect(
         service.user_email,
@@ -725,7 +744,7 @@ class PaymentRecoveryService {
   // Email templates
   generateActivationEmail(service, agent) {
     return `
-      <p>Hello ${service.user_name},</p>
+      <p>Hello ${service.user_display_name},</p>
       <p>Your <strong>${this.packages[service.service_package].name}</strong> recovery service has been activated for:</p>
 
       <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 20px 0;">
@@ -762,7 +781,7 @@ class PaymentRecoveryService {
 
   generateStatusUpdateEmail(service, oldStatus, newStatus) {
     return `
-      <p>Hello ${service.user_name},</p>
+      <p>Hello ${service.user_display_name},</p>
       <p>There's an update on your recovery service for:</p>
 
       <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 20px 0;">
@@ -819,7 +838,7 @@ class PaymentRecoveryService {
           <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${service.brand} ${service.model}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Category:</td><td>${service.category}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Service Package:</td><td>${this.packages[service.service_package].name}</td></tr>
-          <tr><td style="font-weight: 600; padding-right: 12px;">Client:</td><td>${service.user_name}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Client:</td><td>${service.user_display_name}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Active Until:</td><td>${new Date(service.expires_at).toLocaleDateString()}</td></tr>
         </table>
       </div>

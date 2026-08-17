@@ -4,6 +4,7 @@ const Database = require('../config');
 const notifier = require('../services/EnhancedNotificationService');
 const RevenueService = require('../services/RevenueService');
 const FraudDetectionService = require('../services/FraudDetectionService');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -66,7 +67,7 @@ router.get('/', noRestrictions, async (req, res) => {
         const token = authHeader.split(' ')[1];
         const decoded = Database.verifyJWT(token);
         checkerUserId = decoded.id;
-        checker = await Database.selectOne('users', 'id, name, email, role', 'id = ?', [checkerUserId]);
+        checker = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name, email, role', 'id = ?', [checkerUserId]);
       } catch (error) {
         // Continue without identity for anonymous checks
       }
@@ -239,7 +240,7 @@ router.get('/', noRestrictions, async (req, res) => {
               <li><strong>IP:</strong> ${clientIP}</li>
               <li><strong>MAC:</strong> ${macAddress || 'Unknown'}</li>
               <li><strong>User-Agent:</strong> ${userAgent}</li>
-              <li><strong>Checker:</strong> ${checker ? `${checker.name} (${checker.email || checker.id})` : 'Anonymous'}</li>
+              <li><strong>Checker:</strong> ${checker ? `${getDisplayName(checker)} (${checker.email || checker.id})` : 'Anonymous'}</li>
               <li><strong>Location:</strong> ${locationLatitude && locationLongitude ? `${locationLatitude}, ${locationLongitude} (±${locationAccuracy || 'n/a'}m)` : 'Unknown'}</li>
               <li><strong>Check ID:</strong> ${checkId}</li>
             </ul>
@@ -254,7 +255,7 @@ router.get('/', noRestrictions, async (req, res) => {
 
         // Notify device owner
         if (device.user_id) {
-          const owner = await Database.selectOne('users', 'email, name, phone', 'id = ?', [device.user_id]);
+          const owner = await Database.selectOne('users', 'email, name, first_name, middle_name, last_name, phone', 'id = ?', [device.user_id]);
           if (owner?.email) {
             await notifier.sendEmail(owner.email, `Device Check Alert - ${device.brand} ${device.model}`, html);
           }
@@ -393,7 +394,7 @@ router.post('/enhanced', async (req, res) => {
         let checker = null;
         if (checkerUserId) {
           try {
-            checker = await Database.selectOne('users', 'id, name, email, phone', 'id = ?', [checkerUserId]);
+            checker = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name, email, phone', 'id = ?', [checkerUserId]);
           } catch (e) {
             // ignore fetch errors
           }
@@ -410,7 +411,7 @@ router.post('/enhanced', async (req, res) => {
               <li><strong>IP:</strong> ${networkInfo?.ip || networkInfo?.ipAddress || 'Unknown'}</li>
               <li><strong>MAC:</strong> ${networkInfo?.mac || networkInfo?.macAddress || deviceFingerprint?.macAddress || 'Unknown'}</li>
               <li><strong>User-Agent:</strong> ${deviceFingerprint?.userAgent || 'Unknown'}</li>
-              <li><strong>Checker:</strong> ${checker ? `${checker.name} (${checker.email || checker.phone || checker.id})` : 'Anonymous'}</li>
+              <li><strong>Checker:</strong> ${checker ? `${getDisplayName(checker)} (${checker.email || checker.phone || checker.id})` : 'Anonymous'}</li>
               <li><strong>Location:</strong> ${checkerLocation?.latitude && checkerLocation?.longitude ? `${checkerLocation.latitude}, ${checkerLocation.longitude} (±${checkerLocation.accuracy || 'n/a'}m)` : 'Unknown'}</li>
               <li><strong>Check ID:</strong> ${checkResult.checkId || 'Unknown'}</li>
             </ul>
@@ -440,7 +441,7 @@ router.post('/enhanced', async (req, res) => {
 
         // Notify device owner
         if (device?.user_id) {
-          const owner = await Database.selectOne('users', 'email, name, phone', 'id = ?', [device.user_id]);
+          const owner = await Database.selectOne('users', 'email, name, first_name, middle_name, last_name, phone', 'id = ?', [device.user_id]);
           if (owner?.email) {
             await notifier.sendEmail(owner.email, `Device Check Alert - ${device.brand} ${device.model}`, html);
             await Database.insert('notifications', {
@@ -527,6 +528,9 @@ router.get('/history', async (req, res) => {
       `SELECT 
         dc.*, 
         u.name AS checker_name,
+        u.first_name AS checker_first_name,
+        u.middle_name AS checker_middle_name,
+        u.last_name AS checker_last_name,
         u.email AS checker_email
        FROM device_check_logs dc
        LEFT JOIN users u ON dc.checker_user_id = u.id
@@ -571,7 +575,7 @@ router.get('/report/:id', async (req, res) => {
     let checker = null;
     if (check.checker_user_id) {
       checker = await Database.selectOne(
-        'users', 'id, name, email, phone, region', 'id = ?', [check.checker_user_id]
+        'users', 'id, name, first_name, middle_name, last_name, email, phone, region', 'id = ?', [check.checker_user_id]
       );
     }
 

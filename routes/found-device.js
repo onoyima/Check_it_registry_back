@@ -2,6 +2,7 @@
 const express = require('express');
 const Database = require('../config');
 const NotificationService = require('../services/NotificationService');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -159,7 +160,7 @@ router.post('/report', async (req, res) => {
             <p><strong>Found Location:</strong> ${location_found}</p>
             <p><strong>Finder:</strong> ${finder_name}</p>
             <p><strong>Finder Contact:</strong> ${finder_contact}</p>
-            <p><strong>Owner:</strong> ${owner.name} (${owner.email})</p>
+            <p><strong>Owner:</strong> ${getDisplayName(owner)} (${owner.email})</p>
             <p>Please coordinate the return of this device to its rightful owner.</p>
           `,
           {
@@ -342,6 +343,9 @@ router.get('/reports', async (req, res) => {
         d.imei,
         d.serial,
         u.name as owner_name,
+        u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name,
+        u.last_name as owner_last_name,
         u.email as owner_email,
         u.phone as owner_phone,
         u.region,

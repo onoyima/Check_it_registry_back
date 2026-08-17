@@ -1,6 +1,7 @@
 // Enhanced Device Check Service - Location tracking and security validation
 const Database = require('../config');
 const DeviceCategoryService = require('./DeviceCategoryService');
+const { nameSelectColumns } = require('../utils/user-helpers');
 
 class DeviceCheckService {
   constructor() {
@@ -162,7 +163,7 @@ class DeviceCheckService {
     try {
       // Search by primary identifiers
       const device = await Database.query(`
-        SELECT d.*, u.name as owner_name, u.email as owner_email, u.id as owner_id
+        SELECT d.*, u.name as owner_name, u.first_name as owner_first_name, u.middle_name as owner_middle_name, u.last_name as owner_last_name, u.email as owner_email, u.id as owner_id
         FROM devices d
         JOIN users u ON d.user_id = u.id
         WHERE d.imei = ?
@@ -580,6 +581,9 @@ class DeviceCheckService {
         SELECT 
           dcl.*,
           u.name as checker_name,
+          u.first_name as checker_first_name,
+          u.middle_name as checker_middle_name,
+          u.last_name as checker_last_name,
           u.email as checker_email
         FROM device_check_logs dcl
         LEFT JOIN users u ON dcl.checker_user_id = u.id

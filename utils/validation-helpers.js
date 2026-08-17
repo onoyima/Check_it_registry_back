@@ -72,9 +72,11 @@ const sanitizeObject = (obj) => {
 const validateProfileUpdate = (data) => {
   const errors = [];
   
+  // Accept either 'name' or 'first_name' for backward compatibility
+  const displayName = data.first_name || data.name;
   try {
-    validateRequired(data.name, 'Name');
-    validateLength(data.name, 2, 100, 'Name');
+    validateRequired(displayName, 'Name');
+    validateLength(displayName, 2, 100, 'Name');
   } catch (error) {
     errors.push(error.message);
   }

@@ -1,8 +1,9 @@
 // Device Transfer Routes - Ownership Transfer System
 const express = require("express");
 const Database = require("../config");
-const { authenticateToken } = require("../middleware/auth");
+const { authenticateToken, requireRole } = require("../middleware/auth");
 const NotificationService = require("../services/NotificationService");
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -121,9 +122,7 @@ router.post("/initiate-legacy", async (req, res) => {
       "Device Transfer Request",
       `
         <h2>Device Transfer Request</h2>
-        <p>You have received a device transfer request from <strong>${
-          req.user.name
-        }</strong> (${req.user.email}).</p>
+        <p>You have received a device transfer request from <strong>${getDisplayName(req.user)}</strong> (${req.user.email}).</p>
         <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
         <p><strong>IMEI:</strong> ${device.imei || "Not provided"}</p>
         <p><strong>Serial:</strong> ${device.serial || "Not provided"}</p>
@@ -152,7 +151,7 @@ router.post("/initiate-legacy", async (req, res) => {
       "Transfer Request Sent",
       `
         <h2>Transfer Request Sent</h2>
-        <p>Your device transfer request has been sent to <strong>${toUser.name}</strong> (${toUser.email}).</p>
+        <p>Your device transfer request has been sent to <strong>${getDisplayName(toUser)}</strong> (${toUser.email}).</p>
         <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
         <p><strong>Transfer Code:</strong> ${transferCode}</p>
         <p>The recipient has 24 hours to accept or reject the transfer.</p>
@@ -171,7 +170,7 @@ router.post("/initiate-legacy", async (req, res) => {
       transfer_code: transferCode,
       expires_at: expiresAt,
       recipient: {
-        name: toUser.name,
+        name: getDisplayName(toUser),
         email: toUser.email,
       },
     });
@@ -226,7 +225,7 @@ router.post("/accept-legacy", async (req, res) => {
     ]);
     const fromUser = await Database.selectOne(
       "users",
-      "name, email",
+      "name, first_name, middle_name, last_name, email",
       "id = ?",
       [transfer.from_user_id]
     );
@@ -275,9 +274,7 @@ router.post("/accept-legacy", async (req, res) => {
         "Device Transfer Completed",
         `
           <h2>Device Transfer Completed</h2>
-          <p>Your device transfer has been accepted by <strong>${
-            req.user.name
-          }</strong>.</p>
+          <p>Your device transfer has been accepted by <strong>${getDisplayName(req.user)}</strong>.</p>
           <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
           <p><strong>Transfer Code:</strong> ${transfer_code}</p>
           <p>The device ownership has been successfully transferred.</p>
@@ -302,7 +299,7 @@ router.post("/accept-legacy", async (req, res) => {
         "Device Transfer Accepted",
         `
           <h2>Device Transfer Accepted</h2>
-          <p>You have successfully accepted the device transfer from <strong>${fromUser.name}</strong>.</p>
+          <p>You have successfully accepted the device transfer from <strong>${getDisplayName(fromUser)}</strong>.</p>
           <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
           <p>The device is now registered under your account and is protected in our registry.</p>
           <p>You can view and manage this device in your dashboard.</p>
@@ -326,7 +323,7 @@ router.post("/accept-legacy", async (req, res) => {
         imei: device.imei,
         serial: device.serial,
       },
-      previous_owner: fromUser.name,
+      previous_owner: getDisplayName(fromUser),
     });
   } catch (error) {
     console.error("Transfer accept error:", error);
@@ -364,7 +361,7 @@ router.post("/reject-legacy", async (req, res) => {
     ]);
     const fromUser = await Database.selectOne(
       "users",
-      "name, email",
+      "name, first_name, middle_name, last_name, email",
       "id = ?",
       [transfer.from_user_id]
     );
@@ -410,9 +407,7 @@ router.post("/reject-legacy", async (req, res) => {
       "Device Transfer Rejected",
       `
         <h2>Device Transfer Rejected</h2>
-        <p>Your device transfer request has been rejected by <strong>${
-          req.user.name
-        }</strong>.</p>
+        <p>Your device transfer request has been rejected by <strong>${getDisplayName(req.user)}</strong>.</p>
         <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
         <p><strong>Transfer Code:</strong> ${transfer_code}</p>
         ${
@@ -482,8 +477,14 @@ router.get("/requests", async (req, res) => {
         d.serial,
         d.color,
         from_user.name as from_user_name,
+        from_user.first_name as from_user_first_name,
+        from_user.middle_name as from_user_middle_name,
+        from_user.last_name as from_user_last_name,
         from_user.email as from_user_email,
         to_user.name as to_user_name,
+        to_user.first_name as to_user_first_name,
+        to_user.middle_name as to_user_middle_name,
+        to_user.last_name as to_user_last_name,
         to_user.email as to_user_email
       FROM device_transfers dt
       JOIN devices d ON dt.device_id = d.id
@@ -564,7 +565,7 @@ router.delete("/:transferId", async (req, res) => {
     );
 
     // Get recipient info for notification
-    const toUser = await Database.selectOne("users", "name, email", "id = ?", [
+    const toUser = await Database.selectOne("users", "name, first_name, middle_name, last_name, email", "id = ?", [
       transfer.to_user_id,
     ]);
     const device = await Database.selectOne(
@@ -583,7 +584,7 @@ router.delete("/:transferId", async (req, res) => {
         "Device Transfer Cancelled",
         `
           <h2>Device Transfer Cancelled</h2>
-          <p>The device transfer request from <strong>${req.user.name}</strong> has been cancelled.</p>
+          <p>The device transfer request from <strong>${getDisplayName(req.user)}</strong> has been cancelled.</p>
           <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
           <p><strong>Transfer Code:</strong> ${transfer.transfer_code}</p>
           <p>This transfer is no longer valid.</p>
@@ -692,8 +693,8 @@ router.get('/history', async (req, res) => {
         CASE WHEN ot.status = 'rejected' THEN ot.updated_at ELSE NULL END AS rejected_at,
         ot.expires_at,
         d.brand, d.model, d.imei, d.serial, d.category,
-        seller.name AS from_user_name, seller.email AS from_user_email, seller.region AS from_region,
-        buyer.name AS to_user_name, buyer.email AS to_user_email, buyer.region AS to_region
+        seller.name AS from_user_name, seller.first_name AS from_user_first_name, seller.middle_name AS from_user_middle_name, seller.last_name AS from_user_last_name, seller.email AS from_user_email, seller.region AS from_region,
+        buyer.name AS to_user_name, buyer.first_name AS to_user_first_name, buyer.middle_name AS to_user_middle_name, buyer.last_name AS to_user_last_name, buyer.email AS to_user_email, buyer.region AS to_region
       FROM ownership_transfers ot
       LEFT JOIN devices d ON ot.device_id = d.id
       LEFT JOIN users seller ON ot.from_user_id = seller.id
@@ -862,6 +863,150 @@ router.post('/cancel', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Transfer cancellation error:', error);
     res.status(500).json({ error: 'Failed to cancel transfer' });
+  }
+});
+
+// POST /api/device-transfer/business-to-user - Business transfers device to a user
+router.post('/business-to-user', authenticateToken, requireRole(['business', 'admin']), async (req, res) => {
+  try {
+    const { device_id, recipient_email, transfer_reason } = req.body;
+
+    if (!device_id || !recipient_email) {
+      return res.status(400).json({ error: 'Device ID and recipient email are required' });
+    }
+
+    const device = await Database.selectOne('devices', '*', 'id = ? AND user_id = ?', [device_id, req.user.id]);
+    if (!device) return res.status(404).json({ error: 'Device not found or not owned by your business' });
+    if (device.status === 'stolen' || device.status === 'lost') {
+      return res.status(400).json({ error: 'Cannot transfer stolen or lost devices' });
+    }
+
+    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email = ?', [recipient_email.toLowerCase().trim()]);
+    if (!recipient) return res.status(404).json({ error: 'Recipient user not found' });
+    if (recipient.id === req.user.id) return res.status(400).json({ error: 'Cannot transfer to yourself' });
+
+    const OwnershipTransferService = require('../services/OwnershipTransferService');
+    const result = await OwnershipTransferService.initiateTransfer({
+      deviceId: device_id,
+      fromUserId: req.user.id,
+      buyerEmail: recipient_email,
+      transferReason: transfer_reason || 'Business to user transfer',
+    });
+
+    if (!result.success) return res.status(400).json({ error: result.error });
+
+    await Database.logAudit(req.user.id, 'BUSINESS_TO_USER_TRANSFER', 'devices', device_id,
+      { user_id: req.user.id },
+      { user_id: recipient.id, reason: transfer_reason },
+      req.ip);
+
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Business-to-user transfer error:', error);
+    res.status(500).json({ error: 'Failed to initiate transfer' });
+  }
+});
+
+// POST /api/device-transfer/business-to-business - Business transfers device to another business
+router.post('/business-to-business', authenticateToken, requireRole(['business', 'admin']), async (req, res) => {
+  try {
+    const { device_id, recipient_business_email, transfer_reason } = req.body;
+
+    if (!device_id || !recipient_business_email) {
+      return res.status(400).json({ error: 'Device ID and recipient business email are required' });
+    }
+
+    const device = await Database.selectOne('devices', '*', 'id = ? AND user_id = ?', [device_id, req.user.id]);
+    if (!device) return res.status(404).json({ error: 'Device not found or not owned by your business' });
+    if (device.status === 'stolen' || device.status === 'lost') {
+      return res.status(400).json({ error: 'Cannot transfer stolen or lost devices' });
+    }
+
+    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email = ?', [recipient_business_email.toLowerCase().trim()]);
+    if (!recipient) return res.status(404).json({ error: 'Recipient business not found' });
+    if (recipient.role !== 'business' && recipient.role !== 'admin') {
+      return res.status(400).json({ error: 'Recipient must have a business account' });
+    }
+    if (recipient.id === req.user.id) return res.status(400).json({ error: 'Cannot transfer to your own business' });
+
+    const OwnershipTransferService = require('../services/OwnershipTransferService');
+    const result = await OwnershipTransferService.initiateTransfer({
+      deviceId: device_id,
+      fromUserId: req.user.id,
+      buyerEmail: recipient_business_email,
+      transferReason: transfer_reason || 'Business to business transfer',
+    });
+
+    if (!result.success) return res.status(400).json({ error: result.error });
+
+    await Database.logAudit(req.user.id, 'BUSINESS_TO_BUSINESS_TRANSFER', 'devices', device_id,
+      { user_id: req.user.id, business_role: 'business' },
+      { user_id: recipient.id, business_role: recipient.role, reason: transfer_reason },
+      req.ip);
+
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Business-to-business transfer error:', error);
+    res.status(500).json({ error: 'Failed to initiate transfer' });
+  }
+});
+
+// POST /api/device-transfer/bulk - Bulk transfer multiple devices
+router.post('/bulk', authenticateToken, requireRole(['business', 'admin']), async (req, res) => {
+  try {
+    const { device_ids, recipient_email, transfer_reason } = req.body;
+
+    if (!device_ids || !Array.isArray(device_ids) || device_ids.length === 0) {
+      return res.status(400).json({ error: 'Device IDs array is required' });
+    }
+    if (!recipient_email) {
+      return res.status(400).json({ error: 'Recipient email is required' });
+    }
+
+    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email = ?', [recipient_email.toLowerCase().trim()]);
+    if (!recipient) return res.status(404).json({ error: 'Recipient user not found' });
+
+    const OwnershipTransferService = require('../services/OwnershipTransferService');
+    const results = [];
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const deviceId of device_ids) {
+      try {
+        const result = await OwnershipTransferService.initiateTransfer({
+          deviceId,
+          fromUserId: req.user.id,
+          buyerEmail: recipient_email,
+          transferReason: transfer_reason || 'Bulk transfer',
+        });
+        if (result.success) {
+          successCount++;
+          results.push({ deviceId, success: true, transferId: result.transferId });
+        } else {
+          failCount++;
+          results.push({ deviceId, success: false, error: result.error });
+        }
+      } catch (err) {
+        failCount++;
+        results.push({ deviceId, success: false, error: err.message });
+      }
+    }
+
+    await Database.logAudit(req.user.id, 'BULK_TRANSFER', 'devices', null,
+      { device_count: device_ids.length, recipient: recipient_email },
+      { success_count: successCount, fail_count: failCount },
+      req.ip);
+
+    res.json({
+      success: successCount > 0,
+      total: device_ids.length,
+      successCount,
+      failCount,
+      results,
+    });
+  } catch (error) {
+    console.error('Bulk transfer error:', error);
+    res.status(500).json({ error: 'Failed to process bulk transfer' });
   }
 });
 

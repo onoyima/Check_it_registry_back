@@ -3,14 +3,40 @@ const router = express.Router();
 const Database = require('../config');
 const RevenueService = require('../services/RevenueService');
 const FraudDetectionService = require('../services/FraudDetectionService');
+const NotificationService = require('../services/NotificationService');
 const { authenticateToken, requireRole } = require('../middleware/auth');
+const { buildUserNameFields, getDisplayName } = require('../utils/user-helpers');
 
 router.use(authenticateToken);
 
 router.post('/onboard', requireRole(['business', 'admin']), async (req, res) => {
   try {
-    const { customer_name, customer_email, customer_phone, device_brand, device_model, device_imei, pay_by_pass } = req.body;
-    if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
+    const {
+      customer_first_name, customer_last_name, customer_middle_name,
+      customer_email, customer_phone,
+      device_brand, device_model, device_imei,
+      pay_by_pass
+    } = req.body;
+
+    const customerName = getDisplayName(buildUserNameFields({
+      first_name: customer_first_name, last_name: customer_last_name, middle_name: customer_middle_name
+    })) || req.body.customer_name;
+
+    if (!customerName) return res.status(400).json({ error: 'Customer name is required' });
+
+    // Validate email/phone uniqueness for new customer accounts
+    if (customer_email) {
+      const existingEmail = await Database.selectOne('users', 'id', 'email = ?', [customer_email.toLowerCase().trim()]);
+      if (existingEmail) {
+        return res.status(409).json({ error: 'A user with this email already exists. Cannot onboard duplicate account.' });
+      }
+    }
+    if (customer_phone) {
+      const existingPhone = await Database.selectOne('users', 'id', 'phone = ?', [customer_phone.trim()]);
+      if (existingPhone) {
+        return res.status(409).json({ error: 'A user with this phone number already exists. Cannot onboard duplicate account.' });
+      }
+    }
 
     const fee = await RevenueService.getFee('business_onboarding_fee');
     const commissionPercent = await RevenueService.getFee('business_onboarding_commission_percent');
@@ -19,7 +45,7 @@ router.post('/onboard', requireRole(['business', 'admin']), async (req, res) => 
       const invoiceId = await RevenueService.createPaymentInvoice(
         req.user.id, fee, 'business_onboarding',
         `BON-${req.user.id}-${Date.now()}`,
-        { customer_name, customer_email, customer_phone, device_brand, device_model, device_imei }
+        { customer_name: customerName, customer_email, customer_phone, device_brand, device_model, device_imei }
       );
       return res.json({
         requiresPayment: true,
@@ -34,12 +60,35 @@ router.post('/onboard', requireRole(['business', 'admin']), async (req, res) => 
     const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'BUSINESS_ONBOARD', {
       ipAddress: req.clientIp,
     });
+    if (fraudCheck.blocked) {
+      return res.status(403).json({ error: 'Action blocked due to security concerns.' });
+    }
+
+    // Create customer user account
+    const customerUserId = Database.generateUUID();
+    const tempPassword = Math.random().toString(36).slice(-8) + 'A1!';
+    const passwordHash = await Database.hashPassword(tempPassword);
+
+    await Database.insert('users', {
+      id: customerUserId,
+      ...buildUserNameFields({
+        first_name: customer_first_name, last_name: customer_last_name, middle_name: customer_middle_name
+      }),
+      name: customerName,
+      email: customer_email ? customer_email.toLowerCase().trim() : `${customerUserId}@onboarded.local`,
+      password_hash: passwordHash,
+      phone: customer_phone?.trim() || null,
+      role: 'user',
+      region: 'default',
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
 
     const commissionAmount = parseFloat((fee * commissionPercent / 100).toFixed(2));
 
     const onboardingId = await RevenueService.createBusinessOnboarding({
       business_id: req.user.id,
-      customer_name,
+      customer_name: customerName,
       customer_email,
       customer_phone,
       device_brand,
@@ -57,19 +106,42 @@ router.post('/onboard', requireRole(['business', 'admin']), async (req, res) => 
       { commission_transaction_id: commissionTxnId, status: 'completed' },
       'id = ?', [onboardingId]);
 
-    await RevenueService.markInvoicePaid(pay_by_pass);
-
     await Database.logAudit(req.user.id, 'BUSINESS_ONBOARD', 'business_onboardings', onboardingId,
-      null, { customer_name, fee, commissionAmount }, req.ip);
+      null, { customer_name: customerName, customer_user_id: customerUserId, fee, commissionAmount }, req.ip);
+
+    // Send welcome email with temporary password to new customer
+    if (customer_email) {
+      try {
+        await NotificationService.queueNotification(
+          customerUserId, 'email', customer_email,
+          'Welcome to Prove Ownership - Your Account',
+          `
+            <h2>Welcome to Prove Ownership!</h2>
+            <p><strong>${customerName}</strong>, a business partner has created an account for you.</p>
+            <div style="background:#EFF6FF;border-left:4px solid #2563EB;padding:16px;border-radius:8px;margin:16px 0;">
+              <p><strong>Login Email:</strong> ${customer_email}</p>
+              <p><strong>Temporary Password:</strong> <code style="font-size:16px;background:#E5E7EB;padding:4px 8px;border-radius:4px;">${tempPassword}</code></p>
+            </div>
+            <p>Please log in and change your password immediately for security.</p>
+            <p><a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/login" style="display:inline-block;padding:12px 24px;background:#2563EB;color:white;border-radius:8px;text-decoration:none;">Login Now</a></p>
+          `,
+          { type: 'onboarding_welcome', business_id: req.user.id }
+        );
+      } catch (emailErr) {
+        console.error('[Onboarding] Welcome email error:', emailErr.message);
+      }
+    }
 
     res.json({
       success: true,
       onboardingId,
+      customerId: customerUserId,
       fee_amount: fee,
       commission_amount: commissionAmount,
-      message: `Customer onboarded successfully. Your commission: ₦${commissionAmount}`
+      message: `Customer onboarded successfully. Your commission: ₦${commissionAmount}`,
     });
   } catch (error) {
+    console.error('[Onboarding] Error:', error);
     res.status(500).json({ error: error.message || 'Failed to onboard customer' });
   }
 });
@@ -137,7 +209,6 @@ router.get('/onboardings/stats', async (req, res) => {
   }
 });
 
-// POST /api/business/payout-settings - Update payout settings
 router.post('/payout-settings', async (req, res) => {
   try {
     const { bank_name, account_number, account_name } = req.body;

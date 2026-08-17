@@ -3,6 +3,7 @@ const express = require('express');
 const Database = require('../config');
 const { authenticateToken } = require('../middleware/auth');
 const NotificationService = require('../services/NotificationService');
+const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
 
@@ -44,7 +45,7 @@ router.get('/search-users', async (req, res) => {
 
     // Exclude current user and limit results
     const users = await Database.query(
-      `SELECT id, name, email
+      `SELECT id, name, first_name, middle_name, last_name, email
        FROM users
        WHERE id <> ? AND (email LIKE ? OR name LIKE ?)
        ORDER BY name ASC
@@ -79,6 +80,9 @@ router.get('/dashboard', async (req, res) => {
           ELSE d.status
         END as status_display,
         v.name as verified_by_name,
+        v.first_name as verified_by_first_name,
+        v.middle_name as verified_by_middle_name,
+        v.last_name as verified_by_last_name,
         DATEDIFF(NOW(), d.created_at) as days_registered
       FROM devices d
       LEFT JOIN users v ON d.verified_by = v.id
@@ -108,7 +112,13 @@ router.get('/dashboard', async (req, res) => {
         dt.*,
         d.brand, d.model, d.imei,
         from_user.name as from_user_name,
+        from_user.first_name as from_user_first_name,
+        from_user.middle_name as from_user_middle_name,
+        from_user.last_name as from_user_last_name,
         to_user.name as to_user_name,
+        to_user.first_name as to_user_first_name,
+        to_user.middle_name as to_user_middle_name,
+        to_user.last_name as to_user_last_name,
         CASE 
           WHEN dt.from_user_id = ? THEN 'sent'
           WHEN dt.to_user_id = ? THEN 'received'
@@ -148,7 +158,7 @@ router.get('/dashboard', async (req, res) => {
       data: {
         user: {
           id: req.user.id,
-          name: req.user.name,
+          name: getDisplayName(req.user),
           email: req.user.email,
           role: req.user.role,
           region: req.user.region
@@ -198,6 +208,9 @@ router.get('/devices', async (req, res) => {
       SELECT 
         d.*,
         v.name as verified_by_name,
+        v.first_name as verified_by_first_name,
+        v.middle_name as verified_by_middle_name,
+        v.last_name as verified_by_last_name,
         v.email as verified_by_email,
         DATEDIFF(NOW(), d.created_at) as days_registered,
         (SELECT COUNT(*) FROM reports WHERE device_id = d.id) as report_count,
@@ -244,6 +257,9 @@ router.get('/devices/:id', async (req, res) => {
       SELECT 
         d.*,
         v.name as verified_by_name,
+        v.first_name as verified_by_first_name,
+        v.middle_name as verified_by_middle_name,
+        v.last_name as verified_by_last_name,
         v.email as verified_by_email
       FROM devices d
       LEFT JOIN users v ON d.verified_by = v.id
@@ -273,8 +289,14 @@ router.get('/devices/:id', async (req, res) => {
       SELECT 
         dt.*,
         from_user.name as from_user_name,
+        from_user.first_name as from_user_first_name,
+        from_user.middle_name as from_user_middle_name,
+        from_user.last_name as from_user_last_name,
         from_user.email as from_user_email,
         to_user.name as to_user_name,
+        to_user.first_name as to_user_first_name,
+        to_user.middle_name as to_user_middle_name,
+        to_user.last_name as to_user_last_name,
         to_user.email as to_user_email
       FROM device_transfers dt
       JOIN users from_user ON dt.from_user_id = from_user.id
@@ -287,7 +309,10 @@ router.get('/devices/:id', async (req, res) => {
     const verificationHistory = await Database.query(`
       SELECT 
         dvh.*,
-        u.name as verified_by_name
+        u.name as verified_by_name,
+        u.first_name as verified_by_first_name,
+        u.middle_name as verified_by_middle_name,
+        u.last_name as verified_by_last_name
       FROM device_verification_history dvh
       JOIN users u ON dvh.verified_by = u.id
       WHERE dvh.device_id = ?
@@ -301,6 +326,9 @@ router.get('/devices/:id', async (req, res) => {
         SELECT 
           dc.*, 
           u.name AS checker_name,
+          u.first_name AS checker_first_name,
+          u.middle_name AS checker_middle_name,
+          u.last_name AS checker_last_name,
           u.email AS checker_email
         FROM device_check_logs dc
         LEFT JOIN users u ON dc.checker_user_id = u.id
@@ -474,7 +502,9 @@ router.get('/reports/:caseId', async (req, res) => {
       SELECT 
         r.*,
         d.brand, d.model, d.imei, d.serial, d.color, d.device_image_url,
-        owner.name as owner_name, owner.email as owner_email,
+        owner.name as owner_name, owner.first_name as owner_first_name,
+        owner.middle_name as owner_middle_name, owner.last_name as owner_last_name,
+        owner.email as owner_email,
         lea.agency_name, lea.contact_email as lea_email, lea.contact_phone as lea_phone,
         lea.address as lea_address
       FROM reports r
@@ -492,7 +522,10 @@ router.get('/reports/:caseId', async (req, res) => {
     const timeline = await Database.query(`
       SELECT 
         al.action, al.new_values, al.created_at,
-        u.name as updated_by_name
+        u.name as updated_by_name,
+        u.first_name as updated_by_first_name,
+        u.middle_name as updated_by_middle_name,
+        u.last_name as updated_by_last_name
       FROM audit_logs al
       LEFT JOIN users u ON al.user_id = u.id
       WHERE al.table_name = 'reports' AND al.record_id = ?
@@ -574,7 +607,7 @@ router.get('/profile', async (req, res) => {
 
     const profile = await Database.selectOne(`
       SELECT 
-        id, name, email, phone, region, role, verified_at, created_at,
+        id, name, first_name, middle_name, last_name, email, phone, region, role, verified_at, created_at,
         (SELECT COUNT(*) FROM devices WHERE user_id = ?) as device_count,
         (SELECT COUNT(*) FROM reports WHERE reporter_id = ?) as report_count,
         (SELECT COUNT(*) FROM device_transfers WHERE from_user_id = ? OR to_user_id = ?) as transfer_count
@@ -646,7 +679,7 @@ router.put('/profile', async (req, res) => {
 
     const updatedUser = await Database.selectOne(
       'users',
-      'id, name, email, phone, region, role, verified_at, created_at',
+      'id, name, first_name, middle_name, last_name, email, phone, region, role, verified_at, created_at',
       'id = ?',
       [userId]
     );
@@ -725,7 +758,7 @@ router.get('/search-users', async (req, res) => {
 
     // Limit suggestions and exclude sensitive fields
     const users = await Database.query(
-      `SELECT id, name, email FROM users 
+      `SELECT id, name, first_name, middle_name, last_name, email FROM users 
        WHERE email LIKE ? OR name LIKE ?
        ORDER BY created_at DESC
        LIMIT 10`,
