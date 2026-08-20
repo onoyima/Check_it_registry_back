@@ -593,26 +593,26 @@ router.put('/update', authenticateToken, async (req, res) => {
 router.get('/stats', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const [[{ deviceCount }]] = await Database.query(
+    const [deviceRow] = await Database.query(
       'SELECT COUNT(*) as deviceCount FROM devices WHERE user_id = ?', [userId]
     );
-    const [[{ reportCount }]] = await Database.query(
+    const [reportRow] = await Database.query(
       'SELECT COUNT(*) as reportCount FROM reports WHERE reporter_id = ?', [userId]
     );
-    const [[{ transferCount }]] = await Database.query(
+    const [transferRow] = await Database.query(
       'SELECT COUNT(*) as transferCount FROM ownership_transfers WHERE from_user_id = ? OR to_user_id = ?', [userId, userId]
     );
-    const [[{ listingCount }]] = await Database.query(
+    const [listingRow] = await Database.query(
       'SELECT COUNT(*) as listingCount FROM marketplace_listings WHERE seller_id = ?', [userId]
     );
     const user = await Database.selectOne('users', 'created_at', 'id = ?', [userId]);
 
     res.json({
       stats: {
-        devices: deviceCount,
-        reports: reportCount,
-        transfers: transferCount,
-        listings: listingCount,
+        devices: deviceRow?.deviceCount || 0,
+        reports: reportRow?.reportCount || 0,
+        transfers: transferRow?.transferCount || 0,
+        listings: listingRow?.listingCount || 0,
         memberSince: user?.created_at
       }
     });

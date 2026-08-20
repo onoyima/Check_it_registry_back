@@ -632,4 +632,52 @@ router.put('/users/:id/role', async (req, res) => {
   }
 });
 
+// GET /api/admin-portal/lea-agencies - List LEA agencies/users
+router.get('/lea-agencies', async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search } = req.query;
+    const offset = (page - 1) * limit;
+
+    let whereClause = "role = 'lea'";
+    let whereParams = [];
+
+    if (search) {
+      whereClause += ' AND (name LIKE ? OR email LIKE ? OR region LIKE ?)';
+      whereParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    const leas = await Database.query(`
+      SELECT u.id, u.name, u.first_name, u.middle_name, u.last_name, u.email, u.region, u.verified_at, u.created_at,
+        CASE WHEN u.deleted_at IS NOT NULL THEN 'deleted' ELSE 'active' END as status,
+        COALESCE(bp.business_name, u.agency_id, 'Independent LEA') as agency_name,
+        u.agency_id,
+        (SELECT COUNT(*) FROM reports r WHERE r.assigned_lea_id = u.id) as assigned_cases,
+        (SELECT COUNT(*) FROM reports r WHERE r.assigned_lea_id = u.id AND r.status = 'resolved') as resolved_cases
+      FROM users u
+      LEFT JOIN business_profiles bp ON bp.user_id = u.id
+      WHERE ${whereClause}
+      ORDER BY u.created_at DESC
+      LIMIT ? OFFSET ?
+    `, [...whereParams, parseInt(limit), parseInt(offset)]);
+
+    const [totalCount] = await Database.query(
+      `SELECT COUNT(*) as count FROM users WHERE ${whereClause}`,
+      whereParams
+    );
+
+    res.json({
+      agencies: leas,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: totalCount.count,
+        pages: Math.ceil(totalCount.count / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching LEA agencies:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;

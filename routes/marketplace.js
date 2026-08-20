@@ -194,6 +194,87 @@ router.get('/:id/messages', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/marketplace/inbox - aggregate all messages for the current user across their listings
+router.get('/inbox', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get all threads/messages where user is sender or receiver
+    const messages = await Database.query(`
+      SELECT
+        mm.id,
+        mm.listing_id AS deviceId,
+        ml.title AS deviceTitle,
+        CASE
+          WHEN mm.sender_id = ? THEN mm.receiver_id
+          ELSE mm.sender_id
+        END AS otherUserId,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.name
+          ELSE su.name
+        END AS fromName,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.first_name
+          ELSE su.first_name
+        END AS fromFirstName,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.last_name
+          ELSE su.last_name
+        END AS fromLastName,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.phone
+          ELSE su.phone
+        END AS fromContact,
+        ml.title AS subject,
+        mm.content AS message,
+        CASE
+          WHEN mm.sender_id = ? THEN 0
+          WHEN mm.read_at IS NOT NULL THEN 0
+          ELSE 1
+        END AS isUnread,
+        mm.created_at,
+        CASE
+          WHEN mm.sender_id = ? THEN 1
+          ELSE 0
+        END AS isFromMe
+      FROM marketplace_messages mm
+      LEFT JOIN marketplace_listings ml ON ml.id = mm.listing_id
+      LEFT JOIN users su ON su.id = mm.sender_id
+      LEFT JOIN users ru ON ru.id = mm.receiver_id
+      WHERE mm.sender_id = ? OR mm.receiver_id = ?
+      ORDER BY mm.created_at DESC
+    `, [userId, userId, userId, userId, userId, userId, userId, userId, userId]);
+
+    // Group by listing + other user to create conversation threads
+    const threadMap = new Map();
+    for (const msg of messages) {
+      const key = `${msg.deviceId || 'none'}_${msg.otherUserId}`;
+      if (!threadMap.has(key)) {
+        threadMap.set(key, {
+          id: msg.id,
+          deviceId: msg.deviceId || null,
+          deviceTitle: msg.deviceTitle || null,
+          fromName: msg.fromFirstName || msg.fromLastName
+            ? `${msg.fromFirstName || ''} ${msg.fromLastName || ''}`.trim()
+            : (msg.fromName || 'Unknown'),
+          fromContact: msg.fromContact || '',
+          subject: msg.subject || msg.deviceTitle || 'No subject',
+          message: msg.message,
+          status: msg.isFromMe ? 'read' : (msg.isUnread ? 'unread' : 'read'),
+          createdAt: msg.created_at,
+          online: false,
+          isFromMe: !!msg.isFromMe,
+        });
+      }
+    }
+
+    res.json({ data: Array.from(threadMap.values()) });
+  } catch (error) {
+    console.error('Get inbox error:', error);
+    res.status(500).json({ error: 'Failed to load inbox' });
+  }
+});
+
 // ADMIN ROUTES
 router.get('/admin/all', authenticateToken, requireAdmin, async (req, res) => {
   try {

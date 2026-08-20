@@ -39,6 +39,81 @@ router.get('/categories', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/device-management/categories - Create a new category (admin only)
+router.post('/categories', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    const { name, description } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+    const key = name.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    const existing = await Database.selectOne('device_categories', 'id', 'category_key = ?', [key]);
+    if (existing) {
+      return res.status(409).json({ error: 'Category already exists' });
+    }
+    const id = Database.generateUUID();
+    await Database.insert('device_categories', {
+      id, category_key: key, label: name.trim(),
+      description: description || '', active: true,
+      required_fields: '[]', optional_fields: '[]',
+      identifier_type: 'imei', created_at: new Date(), updated_at: new Date()
+    });
+    res.status(201).json({ id, key, name: name.trim(), description: description || '' });
+  } catch (error) {
+    console.error('Create category error:', error);
+    res.status(500).json({ error: 'Failed to create category' });
+  }
+});
+
+// PUT /api/device-management/categories/:id - Update a category (admin only)
+router.put('/categories/:id', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    const { id } = req.params;
+    const { name, description, active } = req.body;
+    const existing = await Database.selectOne('device_categories', 'id', 'id = ?', [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+    const updateData = { updated_at: new Date() };
+    if (name !== undefined) {
+      updateData.label = name.trim();
+      updateData.category_key = name.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    }
+    if (description !== undefined) updateData.description = description;
+    if (active !== undefined) updateData.active = active;
+    await Database.update('device_categories', updateData, 'id = ?', [id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update category error:', error);
+    res.status(500).json({ error: 'Failed to update category' });
+  }
+});
+
+// DELETE /api/device-management/categories/:id - Delete a category (admin only)
+router.delete('/categories/:id', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    const { id } = req.params;
+    const existing = await Database.selectOne('device_categories', 'id', 'id = ?', [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+    await Database.query('DELETE FROM device_categories WHERE id = ?', [id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete category error:', error);
+    res.status(500).json({ error: 'Failed to delete category' });
+  }
+});
+
 // GET /api/device-management - List user's devices
 router.get("/", authenticateToken, async (req, res) => {
   try {

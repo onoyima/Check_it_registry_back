@@ -77,6 +77,12 @@ class MarketplaceService {
         params.push(filters.status);
     }
 
+    if (filters.seller_verified === 'verified') {
+        sql += ` AND (u.kyc_status = 'verified' OR bp.verification_status = 'verified')`;
+    } else if (filters.seller_verified === 'unverified') {
+        sql += ` AND (u.kyc_status IS NULL OR u.kyc_status != 'verified') AND (bp.verification_status IS NULL OR bp.verification_status != 'verified')`;
+    }
+
     if (search) {
       sql += ` AND (l.title LIKE ? OR l.description LIKE ? OR d.brand LIKE ? OR d.model LIKE ?)`;
       const term = `%${search}%`;

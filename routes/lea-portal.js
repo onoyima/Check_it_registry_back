@@ -832,21 +832,259 @@ router.get('/export/cases', async (req, res) => {
   }
 });
 
+// GET LEA settings (profile + notification preferences)
+router.get('/settings', async (req, res) => {
+  try {
+    const rows = await Database.query(
+      `SELECT id, ${nameSelectColumns}, email, phone, region, department, agency_id,
+              first_name, middle_name, last_name, created_at
+       FROM users WHERE id = ?`,
+      [req.user.id]
+    );
+    const user = rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    let agency = null;
+    if (user.agency_id) {
+      const agencies = await Database.query(
+        'SELECT id, name, abbreviation, jurisdiction, contact_email, contact_phone, address FROM law_enforcement_agencies WHERE id = ?',
+        [user.agency_id]
+      );
+      agency = agencies[0] || null;
+    }
+
+    let notifications = null;
+    const notifSettings = await Database.query(
+      'SELECT * FROM notification_settings WHERE user_id = ?',
+      [req.user.id]
+    );
+    if (notifSettings.length > 0) notifications = notifSettings[0];
+
+    res.json({
+      profile: {
+        id: user.id,
+        firstName: user.first_name || '',
+        middleName: user.middle_name || '',
+        lastName: user.last_name || '',
+        name: getDisplayName(user),
+        email: user.email,
+        phone: user.phone || '',
+        region: user.region || '',
+        department: user.department || '',
+        agencyId: user.agency_id || '',
+        createdAt: user.created_at,
+      },
+      agency,
+      notifications,
+    });
+  } catch (error) {
+    console.error('LEA settings get error:', error);
+    res.status(500).json({ error: 'Failed to load settings' });
+  }
+});
+
 // Update LEA settings
 router.put('/settings', async (req, res) => {
   try {
-    const { region, department } = req.body;
+    const { region, department, firstName, lastName, middleName, phone, notifications } = req.body;
     const updates = {};
-    if (region) updates.region = region;
-    if (department) updates.department = department;
+    if (region !== undefined) updates.region = region;
+    if (department !== undefined) updates.department = department;
+    if (firstName !== undefined) updates.first_name = firstName;
+    if (lastName !== undefined) updates.last_name = lastName;
+    if (middleName !== undefined) updates.middle_name = middleName;
+    if (phone !== undefined) updates.phone = phone;
     if (Object.keys(updates).length > 0) {
       updates.updated_at = new Date();
       await Database.update('users', updates, 'id = ?', [req.user.id]);
     }
+
+    if (notifications && typeof notifications === 'object') {
+      const existing = await Database.query('SELECT id FROM notification_settings WHERE user_id = ?', [req.user.id]);
+      const notifFields = {};
+      if (notifications.email_alerts !== undefined) notifFields.email_alerts = notifications.email_alerts ? 1 : 0;
+      if (notifications.sms_alerts !== undefined) notifFields.sms_alerts = notifications.sms_alerts ? 1 : 0;
+      if (notifications.critical_alerts !== undefined) notifFields.critical_alerts = notifications.critical_alerts ? 1 : 0;
+      if (notifications.new_reports !== undefined) notifFields.new_reports = notifications.new_reports ? 1 : 0;
+      if (notifications.recovery_updates !== undefined) notifFields.recovery_updates = notifications.recovery_updates ? 1 : 0;
+      if (notifications.transfer_notifications !== undefined) notifFields.transfer_notifications = notifications.transfer_notifications ? 1 : 0;
+
+      if (Object.keys(notifFields).length > 0) {
+        notifFields.updated_at = new Date();
+        if (existing.length > 0) {
+          await Database.update('notification_settings', notifFields, 'user_id = ?', [req.user.id]);
+        } else {
+          notifFields.id = Database.generateUUID();
+          notifFields.user_id = req.user.id;
+          notifFields.created_at = new Date();
+          await Database.insert('notification_settings', notifFields);
+        }
+      }
+    }
+
     res.json({ message: 'Settings updated successfully' });
   } catch (error) {
     console.error('LEA settings update error:', error);
     res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// --- LEA Messaging ---
+
+// GET /lea-portal/threads - list all messaging threads for the current LEA user
+router.get('/threads', async (req, res) => {
+  try {
+    const threads = await Database.query(`
+      SELECT t.id, t.subject, t.case_id, t.status, t.created_at, t.updated_at,
+             p.id AS participant_id, p.user_id, p.role AS participant_role, p.last_read_at,
+             ${nameSelectColumns.replace(/u\./g, 'u2.')} AS participant_name
+      FROM lea_threads t
+      JOIN lea_thread_participants p ON p.thread_id = t.id
+      JOIN users u2 ON p.user_id = u2.id
+      WHERE t.id IN (
+        SELECT thread_id FROM lea_thread_participants WHERE user_id = ?
+      )
+      ORDER BY t.updated_at DESC
+    `, [req.user.id]);
+
+    const threadMap = new Map();
+    for (const row of threads) {
+      if (!threadMap.has(row.id)) {
+        const lastMsg = await Database.query(
+          `SELECT m.content, m.created_at, m.sender_id FROM lea_thread_messages m WHERE m.thread_id = ? ORDER BY m.created_at DESC LIMIT 1`,
+          [row.id]
+        );
+        const unreadCount = await Database.query(
+          `SELECT COUNT(*) AS cnt FROM lea_thread_messages m
+           JOIN lea_thread_participants p ON p.thread_id = m.thread_id
+           WHERE m.thread_id = ? AND m.sender_id != ? AND (p.last_read_at IS NULL OR m.created_at > p.last_read_at)
+           AND p.user_id = ?`,
+          [row.id, req.user.id, req.user.id]
+        );
+        threadMap.set(row.id, {
+          id: row.id,
+          subject: row.subject,
+          caseId: row.case_id,
+          status: row.status,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          lastMessage: lastMsg[0] ? { content: lastMsg[0].content, createdAt: lastMsg[0].created_at, senderId: lastMsg[0].sender_id } : null,
+          unreadCount: unreadCount[0]?.cnt || 0,
+          participants: [],
+        });
+      }
+      threadMap.get(row.id).participants.push({
+        id: row.participant_id,
+        userId: row.user_id,
+        role: row.participant_role,
+        name: getDisplayName({ first_name: undefined, middle_name: undefined, last_name: undefined }) || row.participant_name,
+      });
+    }
+
+    res.json({ data: Array.from(threadMap.values()) });
+  } catch (error) {
+    console.error('LEA threads error:', error);
+    res.status(500).json({ error: 'Failed to load threads' });
+  }
+});
+
+// POST /lea-portal/threads - create a new thread
+router.post('/threads', async (req, res) => {
+  try {
+    const { subject, participantUserId, caseId } = req.body;
+    if (!subject || !participantUserId) {
+      return res.status(400).json({ error: 'subject and participantUserId are required' });
+    }
+    const threadId = Database.generateUUID();
+    const now = new Date();
+    await Database.insert('lea_threads', {
+      id: threadId,
+      subject,
+      case_id: caseId || null,
+      status: 'active',
+      created_at: now,
+      updated_at: now,
+    });
+    await Database.insert('lea_thread_participants', {
+      id: Database.generateUUID(),
+      thread_id: threadId,
+      user_id: req.user.id,
+      role: 'lea',
+      joined_at: now,
+      last_read_at: now,
+    });
+    await Database.insert('lea_thread_participants', {
+      id: Database.generateUUID(),
+      thread_id: threadId,
+      user_id: participantUserId,
+      role: 'member',
+      joined_at: now,
+    });
+    res.status(201).json({ id: threadId, subject, status: 'active' });
+  } catch (error) {
+    console.error('Create thread error:', error);
+    res.status(500).json({ error: 'Failed to create thread' });
+  }
+});
+
+// GET /lea-portal/threads/:threadId/messages - list messages in a thread
+router.get('/threads/:threadId/messages', async (req, res) => {
+  try {
+    const { threadId } = req.params;
+    const messages = await Database.query(`
+      SELECT m.id, m.thread_id AS threadId, m.sender_id AS senderId, m.content, m.created_at AS createdAt, m.updated_at AS updatedAt,
+             ${nameSelectColumns.replace(/u\./g, 'u2.')} AS senderName
+      FROM lea_thread_messages m
+      JOIN users u2 ON m.sender_id = u2.id
+      WHERE m.thread_id = ?
+      ORDER BY m.created_at ASC
+    `, [threadId]);
+
+    await Database.query(
+      `UPDATE lea_thread_participants SET last_read_at = NOW() WHERE thread_id = ? AND user_id = ?`,
+      [threadId, req.user.id]
+    );
+
+    res.json({ data: messages });
+  } catch (error) {
+    console.error('Get thread messages error:', error);
+    res.status(500).json({ error: 'Failed to load messages' });
+  }
+});
+
+// POST /lea-portal/threads/:threadId/messages - send a message in a thread
+router.post('/threads/:threadId/messages', async (req, res) => {
+  try {
+    const { threadId } = req.params;
+    const { content } = req.body;
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Content is required' });
+    }
+
+    const participants = await Database.query(
+      'SELECT user_id FROM lea_thread_participants WHERE thread_id = ?',
+      [threadId]
+    );
+    if (!participants.some(p => p.user_id === req.user.id)) {
+      return res.status(403).json({ error: 'Not a participant of this thread' });
+    }
+
+    const msgId = Database.generateUUID();
+    const now = new Date();
+    await Database.insert('lea_thread_messages', {
+      id: msgId,
+      thread_id: threadId,
+      sender_id: req.user.id,
+      content: content.trim(),
+      created_at: now,
+      updated_at: now,
+    });
+    await Database.update('lea_threads', { updated_at: now }, 'id = ?', [threadId]);
+
+    res.status(201).json({ id: msgId, threadId, senderId: req.user.id, content: content.trim(), createdAt: now });
+  } catch (error) {
+    console.error('Send thread message error:', error);
+    res.status(500).json({ error: 'Failed to send message' });
   }
 });
 

@@ -123,4 +123,57 @@ router.get('/paystack-balance', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/payments/payouts - list seller's payout history from transactions
+router.get('/', authenticateToken, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const offset = (Math.max(1, parseInt(page)) - 1) * parseInt(limit);
+
+    let whereClause = "t.user_id = ? AND t.type = 'marketplace_sale'";
+    const params = [req.user.id];
+
+    if (status && status !== 'all') {
+      whereClause += ' AND t.status = ?';
+      params.push(status);
+    }
+
+    const countResult = await Database.query(
+      `SELECT COUNT(*) AS total FROM transactions t WHERE ${whereClause}`,
+      params
+    );
+    const total = countResult[0]?.total || 0;
+
+    const rows = await Database.query(
+      `SELECT t.id, t.amount, t.currency, t.type, t.status, t.reference,
+              t.related_entity_type, t.related_entity_id, t.created_at, t.updated_at,
+              ml.title AS listing_title
+       FROM transactions t
+       LEFT JOIN marketplace_listings ml ON ml.id = t.related_entity_id
+       WHERE ${whereClause}
+       ORDER BY t.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, parseInt(limit), offset]
+    );
+
+    const payouts = rows.map(r => ({
+      id: r.id,
+      amount: Number(r.amount),
+      currency: r.currency || 'NGN',
+      status: r.status,
+      method: 'Bank Transfer',
+      requestedAt: r.created_at,
+      listingTitle: r.listing_title || null,
+      reference: r.reference || null,
+    }));
+
+    res.json({
+      data: payouts,
+      pagination: { page: parseInt(page), limit: parseInt(limit), total, totalPages: Math.ceil(total / parseInt(limit)) }
+    });
+  } catch (err) {
+    console.error('List payouts error:', err);
+    res.status(500).json({ error: 'Failed to fetch payouts' });
+  }
+});
+
 module.exports = router;

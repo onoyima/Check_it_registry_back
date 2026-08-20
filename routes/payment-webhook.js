@@ -34,7 +34,7 @@ router.post('/paystack', express.raw({ type: 'application/json' }), async (req, 
 // POST /api/payments/webhook/monify - Monify webhook
 router.post('/monify', express.json(), async (req, res) => {
   try {
-    const MonifyService = require('../../services/MonifyService');
+    const MonifyService = require('../services/MonifyService');
     const signature = req.headers['x-monify-signature'];
     const timestamp = req.headers['x-monify-timestamp'];
 

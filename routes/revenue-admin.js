@@ -295,17 +295,22 @@ router.put('/payment-provider', requireAdmin, async (req, res) => {
 // Fraud Detection Alerts
 router.get('/fraud-alerts/stats', requireAdmin, async (req, res) => {
   try {
-    const [[{ total }]] = await Database.query(`SELECT COUNT(*) as total FROM suspicious_activity_alerts`);
-    const [[{ new: newCount }]] = await Database.query(
-      `SELECT COUNT(*) as \`new\` FROM suspicious_activity_alerts WHERE status = 'pending'`
+    const [totalRow] = await Database.query(`SELECT COUNT(*) as total FROM suspicious_activity_alerts`);
+    const [newRow] = await Database.query(
+      `SELECT COUNT(*) as pending_count FROM suspicious_activity_alerts WHERE status = 'pending'`
     );
-    const [[{ critical }]] = await Database.query(
+    const [critRow] = await Database.query(
       `SELECT COUNT(*) as critical FROM suspicious_activity_alerts WHERE severity IN ('high','critical')`
     );
-    const [[{ resolved }]] = await Database.query(
+    const [resRow] = await Database.query(
       `SELECT COUNT(*) as resolved FROM suspicious_activity_alerts WHERE status IN ('resolved','false_positive')`
     );
-    res.json({ total, new: newCount, critical, resolved });
+    res.json({
+      total: totalRow?.total || 0,
+      new: newRow?.pending_count || 0,
+      critical: critRow?.critical || 0,
+      resolved: resRow?.resolved || 0
+    });
   } catch (error) {
     console.error('Fraud alerts stats error:', error);
     res.status(500).json({ error: 'Failed to fetch fraud alert stats' });
@@ -333,7 +338,7 @@ router.get('/fraud-alerts', requireAdmin, async (req, res) => {
         dc.query,
         dc.ip_address,
         dc.user_agent,
-        dc.result,
+        dc.check_result,
         d.imei, d.serial, d.brand, d.model,
         u.name as user_name,
         u.email as user_email,
@@ -342,7 +347,6 @@ router.get('/fraud-alerts', requireAdmin, async (req, res) => {
       LEFT JOIN device_checks dc ON a.device_check_id = dc.id
       LEFT JOIN devices d ON a.device_id = d.id
       LEFT JOIN users u ON d.user_id = u.id
-      WHERE a.status IN ('pending', 'investigating')
       ORDER BY a.created_at DESC
       LIMIT ? OFFSET ?
     `, [limit, offset]);
@@ -350,6 +354,16 @@ router.get('/fraud-alerts', requireAdmin, async (req, res) => {
     const mapped = alerts.map(a => ({
       ...a,
       risk_score: a.severity === 'critical' ? 90 : a.severity === 'high' ? 70 : a.severity === 'medium' ? 45 : 20,
+      details: {
+        query: a.query,
+        ip_address: a.ip_address,
+        user_agent: a.user_agent,
+        result: a.check_result,
+        imei: a.imei,
+        serial: a.serial,
+        brand: a.brand,
+        model: a.model
+      },
       status: a.status === 'pending' ? 'new' : a.status === 'investigating' ? 'reviewing' : a.status === 'resolved' ? 'resolved' : 'dismissed'
     }));
 

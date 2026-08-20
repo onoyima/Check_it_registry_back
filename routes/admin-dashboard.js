@@ -83,11 +83,50 @@ router.get('/stats', async (req, res) => {
       // Platform fee percent
       Database.query(`
         SELECT setting_value FROM system_settings WHERE setting_key = 'platform_fee_percent'
+      `),
+
+      // Marketplace stats
+      Database.query(`
+        SELECT
+          COUNT(*) as total_listings,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_listings,
+          COALESCE(SUM(CASE WHEN status = 'sold' THEN price ELSE 0 END), 0) as total_sales
+        FROM marketplace_listings
+      `),
+
+      // Report stats
+      Database.query(`
+        SELECT
+          SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as resolved_cases,
+          SUM(CASE WHEN status IN ('open', 'under_review') THEN 1 ELSE 0 END) as under_review_cases
+        FROM reports
+      `),
+
+      // Monthly user growth (last 12 months)
+      Database.query(`
+        SELECT
+          DATE_FORMAT(created_at, '%Y-%m') AS month_label,
+          COUNT(*) AS count
+        FROM users
+        WHERE created_at >= DATE_SUB(DATE_FORMAT(NOW(), '%Y-%m-01'), INTERVAL 11 MONTH)
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+        ORDER BY month_label ASC
+      `),
+
+      // System health metrics
+      Database.query(`
+        SELECT
+          (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) AS active_users,
+          (SELECT COUNT(*) FROM device_checks WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS checks_24h
       `)
     ]);
 
     const escrow = stats[8][0];
     const platformFeeRow = stats[9];
+    const marketplaceStats = stats[10][0];
+    const reportStats = stats[11][0];
+    const monthlyGrowth = stats[12] || [];
+    const systemHealth = stats[13][0] || {};
 
     res.json({
       total_users: stats[0][0].count,
@@ -107,7 +146,20 @@ router.get('/stats', async (req, res) => {
         total_held_amount: escrow.total_held_amount || 0,
         total_fees_collected: escrow.total_fees_collected || 0
       },
-      platform_fee_percent: platformFeeRow.length > 0 ? platformFeeRow[0].setting_value : '2.50'
+      platform_fee_percent: platformFeeRow.length > 0 ? platformFeeRow[0].setting_value : '2.50',
+      marketplace: {
+        total_listings: marketplaceStats.total_listings || 0,
+        active_listings: marketplaceStats.active_listings || 0,
+        total_sales: marketplaceStats.total_sales || 0,
+        revenue: marketplaceStats.total_sales || 0
+      },
+      resolved_cases: reportStats.resolved_cases || 0,
+      under_review_cases: reportStats.under_review_cases || 0,
+      monthly_user_growth: monthlyGrowth,
+      system_health: {
+        active_users: systemHealth.active_users || 0,
+        checks_24h: systemHealth.checks_24h || 0,
+      }
     });
 
   } catch (error) {
@@ -512,7 +564,7 @@ router.put('/devices/:id', async (req, res) => {
     }
 
     if (admin_notes) {
-      updateData.admin_notes = admin_notes;
+      updateData.verification_notes = admin_notes;
     }
 
     await Database.update('devices', updateData, 'id = ?', [deviceId]);
@@ -677,7 +729,7 @@ router.get('/reports/:id', async (req, res) => {
 router.put('/reports/:id', async (req, res) => {
   try {
     const reportId = req.params.id;
-    const { status, admin_notes, lea_assigned } = req.body;
+    const { status, admin_notes, assigned_lea_id } = req.body;
 
     // Get current report data
     const currentReport = await Database.selectOne('reports', '*', 'id = ?', [reportId]);
@@ -691,8 +743,8 @@ router.put('/reports/:id', async (req, res) => {
     };
 
     if (status) updateData.status = status;
-    if (admin_notes) updateData.admin_notes = admin_notes;
-    if (lea_assigned) updateData.lea_assigned = lea_assigned;
+    if (admin_notes) updateData.resolution_notes = admin_notes;
+    if (assigned_lea_id) updateData.assigned_lea_id = assigned_lea_id;
 
     await Database.update('reports', updateData, 'id = ?', [reportId]);
 
@@ -819,9 +871,10 @@ router.get('/lea-directory', async (req, res) => {
     const { search = '', limit = 20 } = req.query;
     const like = `%${search}%`;
     const leaUsers = await Database.query(`
-      SELECT id, name, email, badge_number
+      SELECT id, name, first_name, last_name, email, agency_id, region,
+        CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE 'active' END as status
       FROM users
-      WHERE role = 'lea' AND (name LIKE ? OR email LIKE ? OR COALESCE(badge_number, '') LIKE ?)
+      WHERE role = 'lea' AND (name LIKE ? OR email LIKE ? OR COALESCE(agency_id, '') LIKE ?)
       ORDER BY name ASC
       LIMIT ?
     `, [like, like, like, parseInt(limit)]);
