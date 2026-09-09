@@ -1,6 +1,7 @@
 const Database = require('../config');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
+const PIIEncryptionService = require('./PIIEncryptionService');
 
 class ArchiveService {
   // ═══════════════════════════════════════════════════════════════
@@ -76,7 +77,7 @@ class ArchiveService {
         report_count: reportCount.c,
         transfer_count: transferCount.c,
         transaction_count: txCount.c,
-        snapshot: JSON.stringify(user),
+        snapshot: JSON.stringify(PIIEncryptionService.redactSnapshot(user)),
         deleted_at: new Date(),
         status: 'deleted',
       });
@@ -85,16 +86,23 @@ class ArchiveService {
       const originalEmail = user.email;
       const timestamp = Date.now();
 
-      // Rename email to free unique constraint for re-registration
+      // Rename email to free unique constraint for re-registration.
+      // Written via Database.update so the PII write-hook encrypts the value and
+      // drops the (now-replaced) email_hash.
       const deletedEmail = `deleted_${timestamp}_${user.email}`;
       const deletedName = `[DELETED] ${user.name}`;
 
-      await Database.query(
-        `UPDATE users SET
-           email = ?, name = ?, deleted_at = NOW(),
-           deletion_reason = ?, original_email = ?
-         WHERE id = ?`,
-        [deletedEmail, deletedName, deletionReason, originalEmail, userId]
+      await Database.update(
+        'users',
+        {
+          email: deletedEmail,
+          name: deletedName,
+          deleted_at: new Date(),
+          deletion_reason: deletionReason,
+          original_email: originalEmail,
+        },
+        'id = ?',
+        [userId]
       );
 
       // Deactivate sessions
@@ -141,7 +149,7 @@ class ArchiveService {
         deletion_reason: deletionReason,
         report_count: reportCount.c,
         transfer_count: transferCount.c,
-        snapshot: JSON.stringify(device),
+        snapshot: JSON.stringify(PIIEncryptionService.redactSnapshot(device)),
         deleted_at: new Date(),
         status: 'deleted',
       });
@@ -190,17 +198,23 @@ class ArchiveService {
 
       // Check if a new account with the same email already exists
       const existingActive = await Database.queryOne(
-        'SELECT id FROM users WHERE email = ? AND deleted_at IS NULL', [archive.original_email]
+        'SELECT id FROM users WHERE email_hash = ? AND deleted_at IS NULL', [PIIEncryptionService.hashEmail(archive.original_email)]
       );
       if (existingActive) throw new Error('An active account with this email already exists');
 
-      // Restore the user record
-      const deletedEmailPattern = `deleted_%_${archive.original_email}`;
-      await Database.query(
-        `UPDATE users SET
-           email = ?, name = ?, deleted_at = NULL, deletion_reason = NULL, original_email = NULL
-         WHERE id = ? AND email LIKE ?`,
-        [archive.original_email, archive.original_name, userId, deletedEmailPattern]
+      // Restore the user record. Written via Database.update so the PII write-hook
+      // re-encrypts the original email and restores its email_hash.
+      await Database.update(
+        'users',
+        {
+          email: archive.original_email,
+          name: archive.original_name,
+          deleted_at: null,
+          deletion_reason: null,
+          original_email: null,
+        },
+        'id = ? AND deleted_at IS NOT NULL',
+        [userId]
       );
 
       // Reactivate sessions
@@ -280,9 +294,11 @@ class ArchiveService {
     let where = "u.deleted_at IS NOT NULL";
     const params = [];
     if (search) {
-      where += " AND (u.original_email LIKE ? OR u.original_name LIKE ? OR u.id LIKE ?)";
+      // original_email is encrypted at rest, so email matching is exact-hash only;
+      // name/id substring search still works as before.
+      where += " AND (u.original_email_hash = ? OR u.original_name LIKE ? OR u.id LIKE ?)";
       const s = `%${search}%`;
-      params.push(s, s, s);
+      params.push(PIIEncryptionService.hashEmail(search), s, s);
     }
     const [{ total }] = await Database.query(`SELECT COUNT(*) as total FROM users u WHERE ${where}`, params);
     const users = await Database.query(
@@ -483,8 +499,8 @@ class ArchiveService {
     let newAccount = null;
     if (user.deleted_at) {
       newAccount = await Database.queryOne(
-        'SELECT id, email, name, created_at FROM users WHERE email = ? AND deleted_at IS NULL',
-        [user.email]
+        'SELECT id, email, name, created_at FROM users WHERE email_hash = ? AND deleted_at IS NULL',
+        [PIIEncryptionService.hashEmail(user.original_email || user.email)]
       );
     }
 

@@ -51,7 +51,6 @@ router.post('/verify', authenticateToken, async (req, res) => {
         if (!req.file) return res.status(400).json({ error: 'Live selfie is required' });
 
         try {
-          const FileUploadService = require('../services/FileUploadService');
           const result = await FileUploadService.processSingleFile(
             req.file.buffer, req.file.originalname, req.file.mimetype, 'selfie_image', req.user.id
           );

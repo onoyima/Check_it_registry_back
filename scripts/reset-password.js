@@ -3,6 +3,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const Database = require('../config');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 
 async function run() {
   const emailArg = process.argv[2];
@@ -21,8 +22,8 @@ async function run() {
     const user = await Database.selectOne(
       'users',
       'id, name, email',
-      'email = ?',
-      [email]
+      'email_hash = ?',
+      [PIIEncryptionService.hashEmail(email)]
     );
     
     if (!user) {

@@ -4,6 +4,7 @@ const Database = require("../config");
 const { authenticateToken, requireRole } = require("../middleware/auth");
 const NotificationService = require("../services/NotificationService");
 const BackgroundJobs = require("../services/BackgroundJobs");
+const FileUploadService = require("../services/FileUploadService");
 const fs = require("fs").promises;
 const path = require("path");
 
@@ -431,7 +432,6 @@ router.post("/maintenance/:operation", async (req, res) => {
 
     switch (operation) {
       case "cleanup-files":
-        const FileUploadService = require("../services/FileUploadService");
         const cleanupResult = await FileUploadService.cleanupOldFiles(30);
         result = {
           operation: "File Cleanup",

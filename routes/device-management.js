@@ -6,6 +6,10 @@ const Database = require("../config");
 const { authenticateToken } = require("../middleware/auth");
 const EmailTemplate = require("../services/EmailTemplate");
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
+const DeviceCategoryService = require('../services/DeviceCategoryService');
+const NotificationService = require('../services/NotificationService');
+const ArchiveService = require('../services/ArchiveService');
+const OTPService = require('../services/OTPService');
 
 const router = express.Router();
 
@@ -30,7 +34,6 @@ router.get('/categories', authenticateToken, async (req, res) => {
     }
 
     // Fallback to service-defined categories
-    const DeviceCategoryService = require('../services/DeviceCategoryService');
     const serviceCats = DeviceCategoryService.getAllCategories().map(c => ({ key: c.value, label: c.name }));
     return res.json(serviceCats);
   } catch (error) {
@@ -250,7 +253,6 @@ router.post("/", authenticateToken, async (req, res) => {
     delete normalizedData.serial; // avoid confusion
 
     // Validate category and device data
-    const DeviceCategoryService = require('../services/DeviceCategoryService');
     const validation = DeviceCategoryService.validateDeviceData(normalizedCategory, normalizedData);
     
     if (!validation.valid) {
@@ -346,7 +348,6 @@ router.post("/", authenticateToken, async (req, res) => {
 
     // Generate a link token and send verification email to the owner
     try {
-      const NotificationService = require("../services/NotificationService");
       const verifyToken = Database.generateJWT({
         type: 'device_verify',
         device_id: deviceId,
@@ -474,7 +475,6 @@ router.delete("/:id", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "Device not found or unauthorized" });
     }
 
-    const ArchiveService = require('../services/ArchiveService');
     const result = await ArchiveService.softDeleteDevice(deviceId, userId, reason || 'User requested deletion');
 
     res.json({
@@ -512,7 +512,6 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
     }
 
     // Verify OTP
-    const OTPService = require("../services/OTPService");
     const otpResult = await OTPService.verifyOTP(
       userId,
       otp_code,
@@ -537,7 +536,6 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
     );
 
     // Send verification success email
-    const NotificationService = require("../services/NotificationService");
     const user = await Database.selectOne("users", "name, email, first_name, middle_name, last_name", "id = ?", [
       userId,
     ]);
@@ -612,7 +610,6 @@ router.post('/verify-device-link', async (req, res) => {
 
     let payload;
     try {
-      const Database = require('../config');
       payload = Database.verifyJWT(token);
     } catch (err) {
       return res.status(400).json({ error: 'Invalid or expired verification token' });
@@ -654,7 +651,6 @@ router.post('/verify-device-link', async (req, res) => {
     );
 
     // Send verification success email
-    const NotificationService = require('../services/NotificationService');
     const user = await Database.selectOne('users', 'name, email, first_name, middle_name, last_name', 'id = ?', [userId]);
       const emailContent = `
         <h2>Verification Successful</h2>
@@ -719,7 +715,6 @@ router.post("/resend-verification", authenticateToken, async (req, res) => {
     }
 
     // Create new OTP
-    const OTPService = require("../services/OTPService");
     await OTPService.createOTP(userId, "device_verification", device_id, 30);
 
     res.json({

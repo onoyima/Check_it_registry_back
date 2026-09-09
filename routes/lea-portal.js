@@ -4,6 +4,7 @@ const Database = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
 const NotificationService = require('../services/NotificationService');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
@@ -297,7 +298,7 @@ router.get('/device-search', async (req, res) => {
     if (brand) { conditions.push('d.brand LIKE ?'); params.push(`%${brand}%`); }
     if (model) { conditions.push('d.model LIKE ?'); params.push(`%${model}%`); }
     if (owner_name) { conditions.push('(u.name LIKE ? OR u.first_name LIKE ? OR u.middle_name LIKE ? OR u.last_name LIKE ?)'); params.push(`%${owner_name}%`, `%${owner_name}%`, `%${owner_name}%`, `%${owner_name}%`); }
-    if (owner_email) { conditions.push('u.email LIKE ?'); params.push(`%${owner_email}%`); }
+    if (owner_email) { conditions.push('u.email_hash = ?'); params.push(PIIEncryptionService.hashEmail(owner_email)); }
     if (region) { conditions.push('u.region LIKE ?'); params.push(`%${region}%`); }
     if (status && status !== 'all') { conditions.push('d.status = ?'); params.push(status); }
 
@@ -625,20 +626,23 @@ router.put('/cases/:caseId/status', async (req, res) => {
 
     // Send notification to device owner
     if (status === 'resolved') {
-      await NotificationService.queueNotification(
-        reportCase.user_id,
-        'email',
-        await Database.selectOne('users', 'email', 'id = ?', [reportCase.user_id]).then(u => u.email),
-        `Case Update - ${caseId}`,
-        `
-          <h2>Case Status Update</h2>
-          <p>Your case <strong>${caseId}</strong> has been marked as resolved.</p>
-          <p><strong>Device:</strong> ${reportCase.brand} ${reportCase.model}</p>
-          ${notes ? `<p><strong>LEA Notes:</strong> ${notes}</p>` : ''}
-          <p>Thank you for using Prove Ownership Device Registry.</p>
-        `,
-        { caseId: caseId, type: 'case_resolved' }
-      );
+      const ownerEmail = await Database.selectOne('users', 'email', 'id = ?', [reportCase.user_id]);
+      if (ownerEmail && ownerEmail.email) {
+        await NotificationService.queueNotification(
+          reportCase.user_id,
+          'email',
+          ownerEmail.email,
+          `Case Update - ${caseId}`,
+          `
+            <h2>Case Status Update</h2>
+            <p>Your case <strong>${caseId}</strong> has been marked as resolved.</p>
+            <p><strong>Device:</strong> ${reportCase.brand} ${reportCase.model}</p>
+            ${notes ? `<p><strong>LEA Notes:</strong> ${notes}</p>` : ''}
+            <p>Thank you for using Prove Ownership Device Registry.</p>
+          `,
+          { caseId: caseId, type: 'case_resolved' }
+        );
+      }
     }
 
     res.json({ 

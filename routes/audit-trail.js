@@ -2,6 +2,7 @@ const express = require('express');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const AuditService = require('../services/AuditService');
 const Database = require('../config');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const router = express.Router();
 
 // All routes require authentication
@@ -44,10 +45,10 @@ router.get('/logs', requireAdmin, async (req, res) => {
         al.action LIKE ? OR 
         al.details LIKE ? OR 
         u.name LIKE ? OR 
-        u.email LIKE ?
+        u.email_hash = ?
       )`);
       const searchTerm = `%${search}%`;
-      queryParams.push(searchTerm, searchTerm, searchTerm, searchTerm);
+      queryParams.push(searchTerm, searchTerm, searchTerm, PIIEncryptionService.hashEmail(search));
     }
 
     if (severity) {

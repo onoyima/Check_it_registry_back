@@ -1,5 +1,6 @@
 // Helper script: fetch latest device_login OTP for a user by email
 const Database = require('../config');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 
 async function main() {
   const email = process.argv[2];
@@ -10,7 +11,7 @@ async function main() {
 
   try {
     console.log(`Fetching latest device_login OTP for ${email}...`);
-    const user = await Database.selectOne('users', 'id, email, name', 'email = ?', [email]);
+    const user = await Database.selectOne('users', 'id, email, name', 'email_hash = ?', [PIIEncryptionService.hashEmail(email)]);
     if (!user) {
       console.error('User not found');
       process.exit(2);

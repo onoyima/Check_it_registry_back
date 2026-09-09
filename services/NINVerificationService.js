@@ -1,30 +1,14 @@
 const Database = require('../config');
-const crypto = require('crypto');
 const axios = require('axios');
-
-const ENCRYPTION_ALGORITHM = 'aes-256-cbc';
-const ENCRYPTION_KEY = process.env.KYC_ENCRYPTION_KEY || 'vOVH6sdmpNWjRRIqCc7rdxs01lwBzfr3';
-const IV_LENGTH = 16;
+const PIIEncryptionService = require('./PIIEncryptionService');
 
 class NINVerificationService {
   static encrypt(text) {
-    if (!text) return null;
-    const iv = crypto.randomBytes(IV_LENGTH);
-    const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, Buffer.from(ENCRYPTION_KEY), iv);
-    let encrypted = cipher.update(text);
-    encrypted = Buffer.concat([encrypted, cipher.final()]);
-    return iv.toString('hex') + ':' + encrypted.toString('hex');
+    return PIIEncryptionService.encrypt(text);
   }
 
   static decrypt(text) {
-    if (!text) return null;
-    const parts = text.split(':');
-    const iv = Buffer.from(parts.shift(), 'hex');
-    const encrypted = Buffer.from(parts.join(':'), 'hex');
-    const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, Buffer.from(ENCRYPTION_KEY), iv);
-    let decrypted = decipher.update(encrypted);
-    decrypted = Buffer.concat([decrypted, decipher.final()]);
-    return decrypted.toString();
+    return PIIEncryptionService.decrypt(text);
   }
 
   /**

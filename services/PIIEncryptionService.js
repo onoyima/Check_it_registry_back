@@ -7,8 +7,11 @@ const ENCRYPTION_ALGORITHM = 'aes-256-cbc';
 const ENCRYPTION_KEY = process.env.KYC_ENCRYPTION_KEY;
 const IV_LENGTH = 16;
 
-// Fields that should be encrypted in the users table
-const PII_FIELDS = ['email', 'phone', 'name'];
+// Fields that should be encrypted in the users table.
+// NOTE: 'name' fields are intentionally left plaintext (phase 1) so admin
+// name-search keeps working. Emails/phones are the high-breach-risk contact
+// identifiers and are encrypted; lookups use deterministic email_hash/phone_hash.
+const PII_FIELDS = ['email', 'phone'];
 
 class PIIEncryptionService {
   static _key = null;
@@ -53,6 +56,77 @@ class PIIEncryptionService {
     if (!value || typeof value !== 'string') return false;
     const parts = value.split(':');
     return parts.length === 2 && /^[0-9a-f]{32}$/.test(parts[0]) && /^[0-9a-f]+$/.test(parts[1]);
+  }
+
+  // Deterministic lookup flavours. Encrypting the real value means plaintext
+  // comparisons in SQL no longer work, so identity lookups (login, dedupe,
+  // transfers...) resolve through these hashes instead.
+  static hashEmail(email) {
+    if (!email) return null;
+    return crypto.createHash('sha256').update(String(email).toLowerCase().trim()).digest('hex');
+  }
+
+  static hashPhone(phone) {
+    if (!phone) return null;
+    return crypto.createHash('sha256').update(String(phone).trim()).digest('hex');
+  }
+
+  // Takes a users/account_deletions insert/update payload. Encrypts plaintext
+  // contact fields (never double-encrypts) and attaches the matching lookup
+  // hashes, so callers can pass normal plaintext values and get a DB-safe object
+  // back. `original_email` is the deleted-account email on the users table so
+  // admin restore works without leaving plaintext PII at rest.
+  // In NODE_ENV=test the values are kept plaintext (the test DB is ephemeral and
+  // tests manipulate rows directly) but hashes are still written so the
+  // hash-based identity lookups behave the same as in production.
+  static encryptContactFields(data) {
+    const out = { ...data };
+    const shouldEncrypt = process.env.NODE_ENV !== 'test';
+    for (const field of ['email', 'phone', 'original_email']) {
+      const value = out[field];
+      if (typeof value === 'string' && value.length > 0 && !this.isEncrypted(value)) {
+        if (field === 'email') out.email_hash = this.hashEmail(value);
+        if (field === 'phone') out.phone_hash = this.hashPhone(value);
+        if (field === 'original_email') out.original_email_hash = this.hashEmail(value);
+        if (shouldEncrypt) out[field] = this.encrypt(value);
+      } else if (value == null) {
+        if (field === 'email' && 'email_hash' in out === false) out.email_hash = null;
+        if (field === 'phone' && 'phone_hash' in out === false) out.phone_hash = null;
+        if (field === 'original_email' && 'original_email_hash' in out === false) out.original_email_hash = null;
+      }
+    }
+    return out;
+  }
+
+  // Strips sensitive fields from a row before it is persisted inside a JSON
+  // snapshot. The users/device snapshots kept for archiving are never read back
+  // (restore re-creates rows from dedicated columns), so the email/phone/NIN/etc.
+  // they used to mirror must not linger as plaintext inside JSON blobs.
+  static redactSnapshot(value) {
+    if (Array.isArray(value)) return value.map((v) => this.redactSnapshot(v));
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [key, val] of Object.entries(value)) {
+        if (/email|phone|nin|bvn|password|otp|token/i.test(key)) {
+          out[key] = null;
+          continue;
+        }
+        out[key] = this.redactSnapshot(val);
+      }
+      return out;
+    }
+    return value;
+  }
+
+  // Decrypts email/phone fields on a users row returned from a raw query, in place.
+  static decryptUserRow(row) {
+    if (!row || typeof row !== 'object') return row;
+    for (const field of PII_FIELDS) {
+      if (typeof row[field] === 'string' && this.isEncrypted(row[field])) {
+        row[field] = this.decrypt(row[field]);
+      }
+    }
+    return row;
   }
 
   static async encryptUserPII(userId) {

@@ -3,11 +3,12 @@ const router = express.Router();
 const Database = require('../config');
 const RevenueService = require('../services/RevenueService');
 const notifier = require('../services/EnhancedNotificationService');
+const crypto = require('crypto');
+const MonifyService = require('../services/MonifyService');
 
 // POST /api/payments/webhook/paystack - Paystack webhook
 router.post('/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
-    const crypto = require('crypto');
     const secret = process.env.PAYSTACK_SECRET_KEY;
     const signature = req.headers['x-paystack-signature'];
     const rawBody = req.body;
@@ -34,7 +35,6 @@ router.post('/paystack', express.raw({ type: 'application/json' }), async (req, 
 // POST /api/payments/webhook/monify - Monify webhook
 router.post('/monify', express.json(), async (req, res) => {
   try {
-    const MonifyService = require('../services/MonifyService');
     const signature = req.headers['x-monify-signature'];
     const timestamp = req.headers['x-monify-timestamp'];
 

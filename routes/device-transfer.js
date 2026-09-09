@@ -1,8 +1,11 @@
 // Device Transfer Routes - Ownership Transfer System
 const express = require("express");
+const crypto = require("crypto");
 const Database = require("../config");
 const { authenticateToken, requireRole } = require("../middleware/auth");
 const NotificationService = require("../services/NotificationService");
+const OwnershipTransferService = require('../services/OwnershipTransferService');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
@@ -12,7 +15,7 @@ router.use(authenticateToken);
 
 // Generate OTP for transfer
 function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
+  return crypto.randomInt(100000, 1000000).toString(); // 6-digit OTP
 }
 
 // Initiate device transfer (legacy endpoint, renamed to avoid collision)
@@ -56,8 +59,8 @@ router.post("/initiate-legacy", async (req, res) => {
     }
 
     // Find recipient user
-    const toUser = await Database.selectOne("users", "*", "email = ?", [
-      to_user_email,
+    const toUser = await Database.selectOne("users", "*", "email_hash = ?", [
+      PIIEncryptionService.hashEmail(to_user_email),
     ]);
     if (!toUser) {
       return res.status(404).json({
@@ -743,8 +746,6 @@ router.post('/initiate', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Device ID is required' });
     }
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
-    
     const result = await OwnershipTransferService.initiateTransfer({
       deviceId,
       fromUserId: req.user.id,
@@ -776,7 +777,6 @@ router.post('/verify-otp', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Transfer ID and OTP code are required' });
     }
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     
     const result = await OwnershipTransferService.verifyTransferOTP(transferId, otpCode);
 
@@ -801,7 +801,6 @@ router.post('/complete', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Transfer code is required' });
     }
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     
     const result = await OwnershipTransferService.completeTransfer(transferCode, req.user.id, otpCode);
 
@@ -828,7 +827,6 @@ router.post('/reject', authenticateToken, async (req, res) => {
     }
 
     // Ensure service is available for the unified transfer flow
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     const result = await OwnershipTransferService.rejectTransfer(transfer_code, userId, rejection_reason);
     if (!result.success) {
       return res.status(400).json({ error: result.error || 'Failed to reject transfer' });
@@ -850,7 +848,6 @@ router.post('/cancel', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Transfer ID is required' });
     }
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     
     const result = await OwnershipTransferService.cancelTransfer(transferId, req.user.id);
 
@@ -881,11 +878,10 @@ router.post('/business-to-user', authenticateToken, requireRole(['business', 'ad
       return res.status(400).json({ error: 'Cannot transfer stolen or lost devices' });
     }
 
-    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email = ?', [recipient_email.toLowerCase().trim()]);
+    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email_hash = ?', [PIIEncryptionService.hashEmail(recipient_email)]);
     if (!recipient) return res.status(404).json({ error: 'Recipient user not found' });
     if (recipient.id === req.user.id) return res.status(400).json({ error: 'Cannot transfer to yourself' });
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     const result = await OwnershipTransferService.initiateTransfer({
       deviceId: device_id,
       fromUserId: req.user.id,
@@ -922,14 +918,13 @@ router.post('/business-to-business', authenticateToken, requireRole(['business',
       return res.status(400).json({ error: 'Cannot transfer stolen or lost devices' });
     }
 
-    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email = ?', [recipient_business_email.toLowerCase().trim()]);
+    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email_hash = ?', [PIIEncryptionService.hashEmail(recipient_business_email)]);
     if (!recipient) return res.status(404).json({ error: 'Recipient business not found' });
     if (recipient.role !== 'business' && recipient.role !== 'admin') {
       return res.status(400).json({ error: 'Recipient must have a business account' });
     }
     if (recipient.id === req.user.id) return res.status(400).json({ error: 'Cannot transfer to your own business' });
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     const result = await OwnershipTransferService.initiateTransfer({
       deviceId: device_id,
       fromUserId: req.user.id,
@@ -963,10 +958,9 @@ router.post('/bulk', authenticateToken, requireRole(['business', 'admin']), asyn
       return res.status(400).json({ error: 'Recipient email is required' });
     }
 
-    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email = ?', [recipient_email.toLowerCase().trim()]);
+    const recipient = await Database.selectOne('users', 'id, email, name, role', 'email_hash = ?', [PIIEncryptionService.hashEmail(recipient_email)]);
     if (!recipient) return res.status(404).json({ error: 'Recipient user not found' });
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     const results = [];
     let successCount = 0;
     let failCount = 0;
@@ -1019,7 +1013,6 @@ router.post('/resend-code', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Transfer ID is required' });
     }
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
 
     const result = await OwnershipTransferService.resendTransferCode(transferId, req.user.id);
 
@@ -1042,7 +1035,6 @@ router.get('/my-transfers', authenticateToken, async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
 
-    const OwnershipTransferService = require('../services/OwnershipTransferService');
     
     const result = await OwnershipTransferService.getUserTransfers(req.user.id, type, page, limit);
 

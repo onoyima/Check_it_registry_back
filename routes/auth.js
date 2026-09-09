@@ -3,8 +3,13 @@ const express = require('express');
 const Database = require('../config');
 const EmailVerificationService = require('../services/EmailVerificationService');
 const OTPService = require('../services/OTPService');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const DeviceSecurityService = require('../services/DeviceSecurityService');
+const FileUploadService = require('../services/FileUploadService');
+const NotificationService = require('../services/NotificationService');
+const EmailTemplate = require('../services/EmailTemplate');
 const { getDisplayName, buildUserNameFields } = require('../utils/user-helpers');
+const { otpLimiter } = require('../middleware/limiters');
 
 const router = express.Router();
 
@@ -82,8 +87,8 @@ router.post('/register', async (req, res) => {
         });
       }
 
-      // Check if user already exists by email
-      const existing = await Database.selectOne('users', 'id', 'email = ?', [email.toLowerCase().trim()]);
+      // Check if user already exists by email (via lookup hash — email is encrypted at rest)
+      const existing = await Database.selectOne('users', 'id', 'email_hash = ?', [PIIEncryptionService.hashEmail(email)]);
       if (existing) {
         return res.status(409).json({ 
           error: 'An account with this email already exists. Please use a different email or try logging in.' 
@@ -92,7 +97,7 @@ router.post('/register', async (req, res) => {
 
       // Check if user already exists by phone (phone is a unique identifier)
       if (phone && phone.trim()) {
-        const existingPhone = await Database.selectOne('users', 'id', 'phone = ?', [phone.trim()]);
+        const existingPhone = await Database.selectOne('users', 'id', 'phone_hash = ?', [PIIEncryptionService.hashPhone(phone)]);
         if (existingPhone) {
           return res.status(409).json({ 
             error: 'An account with this phone number already exists. Please use a different phone number or try logging in.' 
@@ -119,7 +124,6 @@ router.post('/register', async (req, res) => {
 
       // If a profile image was uploaded, store its URL
       if (req.file && req.file.fieldname === 'profile_image') {
-        const FileUploadService = require('../services/FileUploadService');
         const files = await FileUploadService.processUploadedFiles(req.file, userId, userId, 'profile_image');
         const imageUrl = files?.[0]?.url || null;
         if (imageUrl) {
@@ -168,8 +172,6 @@ router.post('/register', async (req, res) => {
 
       // Send welcome email
       try {
-        const NotificationService = require('../services/NotificationService');
-        const EmailTemplate = require('../services/EmailTemplate');
         const welcomeContent = `
           <p>Hello <strong>${userData.name || displayName}</strong>,</p>
           <p>Welcome to <strong>Prove Ownership</strong>, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
@@ -247,7 +249,6 @@ router.post('/register', async (req, res) => {
     // If multipart/form-data, parse optional profile image using FileUploadService
     const contentType = req.headers['content-type'] || '';
     if (contentType.includes('multipart/form-data')) {
-      const FileUploadService = require('../services/FileUploadService');
       const upload = FileUploadService.getUploadMiddleware('profile_image');
       upload(req, res, (err) => {
         if (err) {
@@ -294,8 +295,8 @@ router.post('/login', async (req, res) => {
     const user = await Database.selectOne(
       'users',
       'id, name, first_name, middle_name, last_name, email, password_hash, role, region, verified_at, two_factor_enabled, login_count',
-      'email = ?',
-      [email.toLowerCase().trim()]
+      'email_hash = ?',
+      [PIIEncryptionService.hashEmail(email)]
     );
 
     if (!user) {
@@ -305,6 +306,12 @@ router.post('/login', async (req, res) => {
     }
 
     // Verify password
+    if (!user.password_hash) {
+      console.error(`Login error: User ${user.id} (${user.email}) has no password_hash`);
+      return res.status(401).json({ 
+        error: 'Invalid email or password. Please check your credentials and try again.' 
+      });
+    }
     const validPassword = await Database.verifyPassword(password, user.password_hash);
     if (!validPassword) {
       // Log failed login attempt
@@ -331,7 +338,6 @@ router.post('/login', async (req, res) => {
     const emailVerificationOptional = process.env.EMAIL_VERIFICATION_REQUIRED === 'false';
     if (!user.verified_at && !emailVerificationOptional) {
       // Fire-and-forget: send a fresh verification email
-      const EmailVerificationService = require('../services/EmailVerificationService');
       EmailVerificationService.resendVerification(user.email).catch(err =>
         console.error('Auto-resend verification failed:', err.message)
       );
@@ -353,11 +359,21 @@ router.post('/login', async (req, res) => {
     
     // If device is not trusted and OTP is enabled, require OTP verification
     if (!isDeviceTrusted && enableOtp) {
-      // Create OTP for device verification
-      await OTPService.createOTP(user.id, 'device_login', deviceFingerprint, 10); // 10 minutes
+      // Create OTP for device verification (wrap so email/DB failures don't break login)
+      try {
+        await OTPService.createOTP(user.id, 'device_login', deviceFingerprint, 10); // 10 minutes
+      } catch (otpError) {
+        console.error('OTP creation failed (continuing login):', otpError.message);
+      }
 
       // Create temporary session (not trusted yet)
-      const sessionInfo = await DeviceSecurityService.createDeviceSession(user.id, req, false);
+      let sessionInfo;
+      try {
+        sessionInfo = await DeviceSecurityService.createDeviceSession(user.id, req, false);
+      } catch (sessionError) {
+        console.error('Device session creation failed (continuing login):', sessionError.message);
+        sessionInfo = { deviceFingerprint, isTrusted: false };
+      }
 
       // Send device login notification (fire-and-forget — don't block login)
       const deviceInfo = DeviceSecurityService.parseUserAgent(req.get('User-Agent'));
@@ -480,7 +496,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
 
     // Check phone uniqueness if changing
     if (phone && phone.trim()) {
-      const existingPhone = await Database.selectOne('users', 'id', 'phone = ? AND id != ?', [phone.trim(), userId]);
+      const existingPhone = await Database.selectOne('users', 'id', 'phone_hash = ? AND id != ?', [PIIEncryptionService.hashPhone(phone), userId]);
       if (existingPhone) {
         return res.status(409).json({ error: 'This phone number is already associated with another account' });
       }
@@ -608,7 +624,7 @@ router.post('/request-password-reset', async (req, res) => {
     }
 
     // Find user
-    const user = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name', 'email = ?', [email.toLowerCase().trim()]);
+    const user = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name', 'email_hash = ?', [PIIEncryptionService.hashEmail(email)]);
     
     if (!user) {
       // Don't reveal if email exists or not for security
@@ -673,7 +689,7 @@ router.post('/reset-password', async (req, res) => {
     }
 
     // Find user
-    const user = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name', 'email = ?', [email.toLowerCase().trim()]);
+    const user = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name', 'email_hash = ?', [PIIEncryptionService.hashEmail(email)]);
     
     if (!user) {
       return res.status(400).json({ error: 'Invalid email or OTP code' });
@@ -733,8 +749,6 @@ router.post('/reset-password', async (req, res) => {
 
     // Send password reset confirmation email
     try {
-      const NotificationService = require('../services/NotificationService');
-      const EmailTemplate = require('../services/EmailTemplate');
       const content = `
         <p>Hello <strong>${getDisplayName(user)}</strong>,</p>
         <p>Your password has been successfully reset.</p>
@@ -771,7 +785,7 @@ router.post('/reset-password', async (req, res) => {
 });
 
 // POST /api/auth/send-otp - Send OTP for various purposes
-router.post('/send-otp', authenticateToken, async (req, res) => {
+router.post('/send-otp', otpLimiter, authenticateToken, async (req, res) => {
   try {
     const { otp_type, reference_id } = req.body;
     const userId = req.user.id;
@@ -796,7 +810,7 @@ router.post('/send-otp', authenticateToken, async (req, res) => {
 });
 
 // POST /api/auth/verify-device - Verify device with OTP after login
-router.post('/verify-device', async (req, res) => {
+router.post('/verify-device', otpLimiter, async (req, res) => {
   try {
     const { user_id, otp_code, device_fingerprint, remember_device } = req.body;
 
@@ -895,7 +909,7 @@ router.post('/verify-device', async (req, res) => {
 });
 
 // POST /api/auth/verify-otp - Verify OTP
-router.post('/verify-otp', authenticateToken, async (req, res) => {
+router.post('/verify-otp', otpLimiter, authenticateToken, async (req, res) => {
   try {
     const { otp_code, otp_type, reference_id } = req.body;
     const userId = req.user.id;
@@ -965,7 +979,7 @@ router.delete('/trusted-devices/:sessionId', authenticateToken, async (req, res)
 });
 
 // POST /api/auth/resend-device-otp - Resend OTP for device verification
-router.post('/resend-device-otp', async (req, res) => {
+router.post('/resend-device-otp', otpLimiter, async (req, res) => {
   try {
     const { user_id, device_fingerprint } = req.body;
 

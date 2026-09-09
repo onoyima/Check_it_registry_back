@@ -71,13 +71,13 @@ router.post('/report', async (req, res) => {
     // Get device owner information
     const owner = await Database.selectOne('users', '*', 'id = ?', [device.user_id]);
     
-    // Get LEA for the region
-    const lea = await Database.selectOne(
+    // Get LEA for the region (owner may be null if the device's owner was deleted)
+    const lea = owner ? await Database.selectOne(
       'law_enforcement_agencies',
       '*',
       'region = ? AND active = TRUE',
       [owner.region]
-    );
+    ) : null;
 
     // Create found device report
     const foundReportId = Database.generateUUID();

@@ -2,6 +2,7 @@
 const express = require('express');
 const Database = require('../config');
 const { authenticateToken } = require('../middleware/auth');
+const PaymentRecoveryService = require('../services/PaymentRecoveryService');
 
 const router = express.Router();
 
@@ -11,7 +12,6 @@ router.use(authenticateToken);
 // GET /api/recovery-services/packages - Get available recovery packages
 router.get('/packages', async (req, res) => {
   try {
-    const PaymentRecoveryService = require('../services/PaymentRecoveryService');
     const packages = PaymentRecoveryService.getRecoveryPackages();
     
     res.json({ packages });
@@ -32,8 +32,6 @@ router.post('/create', async (req, res) => {
       });
     }
 
-    const PaymentRecoveryService = require('../services/PaymentRecoveryService');
-    
     const result = await PaymentRecoveryService.createRecoveryService({
       deviceId,
       userId: req.user.id,
@@ -62,8 +60,6 @@ router.post('/payment-webhook', async (req, res) => {
       return res.status(400).json({ error: 'Payment intent ID and status are required' });
     }
 
-    const PaymentRecoveryService = require('../services/PaymentRecoveryService');
-    
     const result = await PaymentRecoveryService.processPaymentCompletion(paymentIntentId, status);
 
     if (!result.success) {
@@ -81,8 +77,6 @@ router.post('/payment-webhook', async (req, res) => {
 // GET /api/recovery-services/my-services - Get user's recovery services
 router.get('/my-services', async (req, res) => {
   try {
-    const PaymentRecoveryService = require('../services/PaymentRecoveryService');
-    
     const services = await PaymentRecoveryService.getUserRecoveryServices(req.user.id);
 
     res.json({ services });
@@ -120,8 +114,6 @@ router.put('/:id/status', async (req, res) => {
       // For now, allow any authenticated user to update (in production, implement proper agent authentication)
     }
 
-    const PaymentRecoveryService = require('../services/PaymentRecoveryService');
-    
     const result = await PaymentRecoveryService.updateRecoveryStatus(
       id, 
       status, 

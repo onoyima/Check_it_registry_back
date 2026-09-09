@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const Database = require('../config');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 
 async function run() {
   try {
@@ -8,7 +9,7 @@ async function run() {
 
     // 1. User details
     console.log('=== USER INFO ===');
-    const user = await Database.selectOne('users', '*', 'email = ?', [email]);
+    const user = await Database.selectOne('users', '*', 'email_hash = ?', [PIIEncryptionService.hashEmail(email)]);
     if (user) {
       console.log('ID:', user.id);
       console.log('Name:', user.name);

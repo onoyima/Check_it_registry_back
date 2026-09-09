@@ -1,4 +1,5 @@
 // Test Setup and Configuration
+process.env.KYC_ENCRYPTION_KEY = process.env.KYC_ENCRYPTION_KEY || 'test-kyc-encryption-key-0123456789abcdef';
 const Database = require('../config');
 
 // Database pool is managed as a module singleton — it stays open for the
@@ -7,12 +8,45 @@ const Database = require('../config');
 
 // Test database configuration
 const testDbConfig = {
-  host: process.env.TEST_DB_HOST || 'localhost',
-  port: process.env.TEST_DB_PORT || 3306,
-  user: process.env.TEST_DB_USER || 'root',
-  password: process.env.TEST_DB_PASSWORD || '',
+  host: process.env.TEST_DB_HOST || process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.TEST_DB_PORT || process.env.DB_PORT || 3306, 10),
+  user: process.env.TEST_DB_USER || process.env.DB_USER || 'root',
+  password: process.env.TEST_DB_PASSWORD || process.env.DB_PASSWORD || '',
   database: process.env.TEST_DB_NAME || 'check_it_registry_test'
 };
+
+// Whether the DB-backed suites can actually run. Checks connectivity once with a
+// short timeout; if no test database exists (shared hosting often grants access to
+// a single DB only), the DB-backed suites skip cleanly instead of crashing.
+let testDbAvailable = null;
+
+async function checkTestDbAvailable() {
+  if (testDbAvailable !== null) return testDbAvailable;
+  try {
+    const mysql = require('mysql2/promise');
+    const conn = await mysql.createConnection({
+      host: testDbConfig.host,
+      port: testDbConfig.port,
+      user: testDbConfig.user,
+      password: testDbConfig.password,
+      connectTimeout: 5000
+    });
+    await conn.query(`SELECT 1 FROM DUAL WHERE EXISTS (SELECT 1)`);
+    await conn.end();
+    testDbAvailable = true;
+    console.log(`[tests] DB-backed suites ENABLED → ${testDbConfig.user}@${testDbConfig.host}:${testDbConfig.port}/${testDbConfig.database}`);
+  } catch (error) {
+    testDbAvailable = false;
+    console.warn(
+      `[tests] No test database reachable (${error.code || error.message}). ` +
+      `DB-backed suites will SKIP. Provision one via ` +
+      `\`docker compose up -d mysql\` (local MySQL on port 3307) or a MySQL you can create ` +
+      `\`${testDbConfig.database}\` in, then run tests with ` +
+      `TEST_DB_HOST/TEST_DB_PORT/TEST_DB_USER/TEST_DB_PASSWORD/TEST_DB_NAME set.`
+    );
+  }
+  return testDbAvailable;
+}
 
 // Test utilities
 class TestUtils {
@@ -189,5 +223,6 @@ class TestUtils {
 
 module.exports = {
   TestUtils,
-  testDbConfig
+  testDbConfig,
+  checkTestDbAvailable,
 };

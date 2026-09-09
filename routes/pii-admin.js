@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
+const Database = require('../config');
 const PIIEncryptionService = require('../services/PIIEncryptionService');
 
 // POST /api/admin/pii/encrypt-all - Migrate all user PII to encrypted
@@ -35,7 +36,6 @@ router.post('/encrypt/:userId', authenticateToken, requireAdmin, async (req, res
 // GET /api/admin/pii/decrypt/:userId - Decrypt a user's PII (admin only, audit-logged)
 router.get('/decrypt/:userId', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const Database = require('../config');
     const result = await PIIEncryptionService.decryptUserPII(req.params.userId);
     if (!result) {
       return res.status(404).json({ error: 'User not found' });

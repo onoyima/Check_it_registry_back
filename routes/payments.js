@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const PaymentService = require('../services/PaymentService');
+const Database = require('../config');
 
 // Add a new payment method
 router.post('/methods', authenticateToken, async (req, res) => {
@@ -54,7 +55,6 @@ router.post('/charge', authenticateToken, async (req, res) => {
     const result = await PaymentService.processPayment(req.user.id, amount, methodId);
     
     // Update transaction status
-    const Database = require('../config.js'); // Direct DB access to update transaction status
     await Database.update('transactions', { 
       status: 'completed', 
       reference: result.transaction_id,
@@ -71,8 +71,6 @@ router.post('/charge', authenticateToken, async (req, res) => {
 // Initiate payment (mobile money, used by mobile checkout)
 router.post('/initiate', authenticateToken, async (req, res) => {
   try {
-    const PaymentService = require('../services/PaymentService');
-    const Database = require('../config.js');
     const { amount, phone, listing_id, type } = req.body;
 
     if (!amount || !phone) {
@@ -104,7 +102,6 @@ router.post('/initiate', authenticateToken, async (req, res) => {
 // Get payment history (mobile)
 router.get('/history', authenticateToken, async (req, res) => {
   try {
-    const Database = require('../config.js');
     const userId = req.user.id;
     const { limit = 50, offset = 0 } = req.query;
 
@@ -133,7 +130,6 @@ router.get('/history', authenticateToken, async (req, res) => {
 // Confirm payment (mobile)
 router.post('/confirm', authenticateToken, async (req, res) => {
   try {
-    const Database = require('../config.js');
     const { reference, listing_id } = req.body;
 
     if (!reference) {
@@ -155,7 +151,6 @@ router.post('/confirm', authenticateToken, async (req, res) => {
 // Payment callback (mobile)
 router.post('/callback', async (req, res) => {
   try {
-    const Database = require('../config.js');
     const { reference, status } = req.body;
 
     if (!reference) {
@@ -194,7 +189,6 @@ router.get('/balance', authenticateToken, async (req, res) => {
 // Get user transactions
 router.get('/transactions', authenticateToken, async (req, res) => {
   try {
-    const Database = require('../config.js');
     const userId = req.user.id;
     const { limit = 50, offset = 0 } = req.query;
 
@@ -228,7 +222,6 @@ router.get('/transactions', authenticateToken, async (req, res) => {
 // Get single transaction by ID
 router.get('/transactions/:id', authenticateToken, async (req, res) => {
   try {
-    const Database = require('../config.js');
     const { id } = req.params;
     const userId = req.user.id;
 

@@ -2,6 +2,7 @@ const mysql = require('mysql2/promise');
 const Database = require('../config');
 const NotificationService = require('./NotificationService');
 const EmailTemplate = require('./EmailTemplate');
+const PIIEncryptionService = require('./PIIEncryptionService');
 
 class EmailVerificationService {
   constructor() {
@@ -208,8 +209,8 @@ class EmailVerificationService {
       try {
         // Find user by email
         const [userRows] = await connection.execute(
-          'SELECT id, name, verified_at FROM users WHERE email = ?',
-          [email]
+          'SELECT id, name, verified_at FROM users WHERE email_hash = ?',
+          [PIIEncryptionService.hashEmail(email)]
         );
 
         if (userRows.length === 0) {

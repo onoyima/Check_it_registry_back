@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Database = require('../config');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
 router.get('/users', authenticateToken, async (req, res) => {
@@ -10,8 +11,8 @@ router.get('/users', authenticateToken, async (req, res) => {
     const params = [];
 
     if (query) {
-      sql += ' AND (name LIKE ? OR email LIKE ?)';
-      params.push(`%${query}%`, `%${query}%`);
+      sql += ' AND (name LIKE ? OR email_hash = ?)';
+      params.push(`%${query}%`, PIIEncryptionService.hashEmail(query));
     }
     if (role) {
       sql += ' AND role = ?';

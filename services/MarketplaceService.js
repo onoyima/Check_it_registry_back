@@ -1,5 +1,6 @@
 const Database = require('../config');
 const PaystackService = require('./PaystackService');
+const PIIEncryptionService = require('./PIIEncryptionService');
 
 class MarketplaceService {
   static async createListing(userId, data) {
@@ -499,9 +500,9 @@ class MarketplaceService {
     const params = [];
 
     if (search) {
-      sql += ` AND (l.title LIKE ? OR l.description LIKE ? OR d.brand LIKE ? OR d.model LIKE ? OR u.email LIKE ?)`;
+      sql += ` AND (l.title LIKE ? OR l.description LIKE ? OR d.brand LIKE ? OR d.model LIKE ? OR u.email_hash = ?)`;
       const term = `%${search}%`;
-      params.push(term, term, term, term, term);
+      params.push(term, term, term, term, PIIEncryptionService.hashEmail(search));
     }
 
     if (status && status !== 'all') {

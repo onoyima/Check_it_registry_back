@@ -2,13 +2,13 @@
 const express = require('express');
 const Database = require('../config');
 const BackgroundJobs = require('../services/BackgroundJobs');
+const CacheService = require('../services/CacheService');
 
 const router = express.Router();
 
 // Get API status and information (public endpoint, cached 30s)
 router.get('/status', async (req, res) => {
   try {
-    const CacheService = require('../services/CacheService');
     const cacheKey = 'api:status';
     let cached = CacheService.get(cacheKey);
     if (cached) {

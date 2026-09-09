@@ -1,5 +1,6 @@
 // Ownership Transfer Service - Secure device ownership transfers
 const Database = require('../config');
+const crypto = require('crypto');
 const OTPService = require('./OTPService');
 const NotificationService = require('./NotificationService');
 const EmailTemplate = require('./EmailTemplate');
@@ -910,13 +911,13 @@ class OwnershipTransferService {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let result = '';
     for (let i = 0; i < this.TRANSFER_CODE_LENGTH; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
+      result += chars.charAt(crypto.randomInt(0, chars.length));
     }
     return result;
   }
 
   generateOTP() {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return crypto.randomInt(100000, 1000000).toString();
   }
 
   safeJsonParse(jsonString) {

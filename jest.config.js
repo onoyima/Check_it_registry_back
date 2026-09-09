@@ -18,6 +18,9 @@ module.exports = {
     'lcov',
     'html'
   ],
+  setupFiles: [
+    '<rootDir>/tests/db-check.js'
+  ],
   setupFilesAfterEnv: [
     '<rootDir>/tests/setup.js'
   ],

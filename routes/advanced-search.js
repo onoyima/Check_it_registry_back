@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Database = require('../config');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
 router.get('/users', authenticateToken, requireRole(['admin']), async (req, res) => {
@@ -11,8 +12,10 @@ router.get('/users', authenticateToken, requireRole(['admin']), async (req, res)
     const joins = [];
 
     if (query) {
-      sql += ' AND (u.name LIKE ? OR u.email LIKE ?)';
-      params.push(`%${query}%`, `%${query}%`);
+      // Email is encrypted at rest — name search stays LIKE, email matches exactly
+      // through its lookup hash (so admin can still find a user by full email).
+      sql += ' AND (u.name LIKE ? OR u.email_hash = ?)';
+      params.push(`%${query}%`, PIIEncryptionService.hashEmail(query));
     }
     if (role) {
       const roles = Array.isArray(role) ? role : [role];

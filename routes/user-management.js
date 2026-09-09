@@ -3,6 +3,8 @@ const express = require('express');
 const Database = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const NotificationService = require('../services/NotificationService');
+const EmailTemplate = require('../services/EmailTemplate');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const { getDisplayName } = require('../utils/user-helpers');
 
 const router = express.Router();
@@ -46,8 +48,8 @@ router.get('/users', async (req, res) => {
     }
 
     if (search) {
-      whereClause += ' AND (u.name LIKE ? OR u.email LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`);
+      whereClause += ' AND (u.name LIKE ? OR u.email_hash = ?)';
+      params.push(`%${search}%`, PIIEncryptionService.hashEmail(search));
     }
 
     // Validate sort parameters
@@ -240,7 +242,6 @@ router.put('/users/:userId/role', async (req, res) => {
     );
 
     // Send notification to user
-    const EmailTemplate = require('../services/EmailTemplate');
     await NotificationService.queueNotification(
       userId,
       'email',
@@ -484,7 +485,7 @@ router.put('/users/:userId', async (req, res) => {
         return res.status(400).json({ error: 'Invalid email format' });
       }
       // Ensure uniqueness
-      const existing = await Database.selectOne('users', 'id', 'email = ? AND id <> ?', [emailTrimmed, userId]);
+      const existing = await Database.selectOne('users', 'id', 'email_hash = ? AND id <> ?', [PIIEncryptionService.hashEmail(emailTrimmed), userId]);
       if (existing) {
         return res.status(409).json({ error: 'Email already in use by another account' });
       }

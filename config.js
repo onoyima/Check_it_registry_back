@@ -2,6 +2,7 @@
 
 require('dotenv').config();
 const mysql = require('mysql2/promise');
+const PIIEncryptionService = require('./services/PIIEncryptionService');
 
 const isTest = process.env.NODE_ENV === 'test';
 
@@ -44,10 +45,30 @@ class Database {
     }
     try {
       const [rows] = await pool.query(sql, params);
+      this.decryptPII(rows);
       return rows;
     } catch (error) {
       console.error('Database query error:', error);
       throw error;
+    }
+  }
+
+  // Central PII decryption-at-the-read-boundary. Any result row whose field name
+  // looks like an email/phone/mail column and whose value is an encrypted blob is
+  // decrypted in place, so admin joins (u.email as owner_email, etc.) and profile
+  // reads transparently get readable values. Values that are not encrypted
+  // (plaintext names, hashes, NIN blobs) are left untouched.
+  static decryptPII(rows) {
+    if (!rows || !Array.isArray(rows) || rows.length === 0) return;
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || 'fieldCount' in row) continue;
+      for (const key of Object.keys(row)) {
+        if (!/email|phone|mail/i.test(key)) continue;
+        const value = row[key];
+        if (typeof value === 'string' && PIIEncryptionService.isEncrypted(value)) {
+          row[key] = PIIEncryptionService.decrypt(value);
+        }
+      }
     }
   }
 
@@ -57,8 +78,15 @@ class Database {
   }
 
   static async insert(table, data) {
-    const keys = Object.keys(data);
-    const values = Object.values(data);
+    // users PII write boundary: email/phone are always stored encrypted with
+    // email_hash/phone_hash lookup columns attached (see update()).
+    // account_deletions stores the deleted owner's original_email for restore;
+    // it is encrypted the same way so deleted identities are not plaintext at rest.
+    const safe = (table === 'users' || table === 'account_deletions')
+      ? PIIEncryptionService.encryptContactFields(data)
+      : data;
+    const keys = Object.keys(safe);
+    const values = Object.values(safe);
     const placeholders = keys.map(() => '?').join(', ');
     
     const sql = `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`;
@@ -71,8 +99,15 @@ class Database {
   }
 
   static async update(table, data, where, whereParams = []) {
-    const keys = Object.keys(data);
-    const values = Object.values(data);
+    // PII write boundary (users/account_deletions only): plaintext email/phone
+    // are encrypted before reaching SQL, with email_hash/phone_hash attached for
+    // identity lookups. Already-encrypted values are never double-encrypted.
+    // Other tables are written verbatim.
+    const safe = (table === 'users' || table === 'account_deletions')
+      ? PIIEncryptionService.encryptContactFields(data)
+      : data;
+    const keys = Object.keys(safe);
+    const values = Object.values(safe);
     const setClause = keys.map(key => `${key} = ?`).join(', ');
     
     const sql = `UPDATE ${table} SET ${setClause} WHERE ${where}`;
@@ -118,18 +153,22 @@ class Database {
 
   // Transaction support
   static async transaction(callback) {
+    if (!pool) {
+      throw new Error('Database connection not available. Please check your MySQL server and credentials.');
+    }
+
     const connection = await pool.getConnection();
-    
+
     try {
       await connection.beginTransaction();
       const result = await callback(connection);
       await connection.commit();
       return result;
     } catch (error) {
-      await connection.rollback();
+      try { await connection.rollback(); } catch (_) {}
       throw error;
     } finally {
-      connection.release();
+      try { connection.release(); } catch (_) {}
     }
   }
 

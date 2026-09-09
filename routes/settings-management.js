@@ -3,6 +3,7 @@ const Database = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { validateInput, sanitizeInput } = require('../middleware/validation');
 const AuditService = require('../services/AuditService');
+const crypto = require('crypto');
 const router = express.Router();
 
 // Get user settings and preferences
@@ -325,7 +326,6 @@ router.post('/api-keys', authenticateToken, [
   try {
     const { name, permissions, expires_in_days = 90 } = sanitizeInput(req.body);
 
-    const crypto = require('crypto');
     const keyPrefix = 'ck_' + crypto.randomBytes(8).toString('hex');
     const keySecret = crypto.randomBytes(32).toString('hex');
     const fullKey = keyPrefix + '_' + keySecret;

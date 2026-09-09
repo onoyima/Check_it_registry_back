@@ -4,6 +4,7 @@ const Database = require('../config');
 const notifier = require('../services/EnhancedNotificationService');
 const RevenueService = require('../services/RevenueService');
 const FraudDetectionService = require('../services/FraudDetectionService');
+const DeviceCheckService = require('../services/DeviceCheckService');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
@@ -327,8 +328,6 @@ router.post('/enhanced', async (req, res) => {
         error: 'Network info required: provide IP and MAC in networkInfo.ip/.ipAddress and networkInfo.mac/.macAddress'
       });
     }
-
-    const DeviceCheckService = require('../services/DeviceCheckService');
     
     // Get user ID if authenticated
     let checkerUserId = null;

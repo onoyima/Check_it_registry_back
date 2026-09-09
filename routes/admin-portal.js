@@ -4,6 +4,9 @@ const Database = require('../config');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
+const NotificationService = require('../services/NotificationService');
+const EmailTemplate = require('../services/EmailTemplate');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 
 const router = express.Router();
 
@@ -434,8 +437,6 @@ router.post('/resend-device-verification/:id', async (req, res) => {
     const verifyLink = `${FRONTEND_URL}/verify-device?token=${verifyToken}`;
 
     // Send email
-    const NotificationService = require('../services/NotificationService');
-    const EmailTemplate = require('../services/EmailTemplate');
     const content = `
       <p>Hello <strong>${getDisplayName(owner)}</strong>,</p>
       <p>This is a friendly reminder to verify ownership of your device:</p>
@@ -549,8 +550,8 @@ router.get('/users', async (req, res) => {
     }
 
     if (search) {
-      whereClause += ' AND (name LIKE ? OR email LIKE ?)';
-      whereParams.push(`%${search}%`, `%${search}%`);
+      whereClause += ' AND (name LIKE ? OR email_hash = ?)';
+      whereParams.push(`%${search}%`, PIIEncryptionService.hashEmail(search));
     }
 
     const users = await Database.query(`
@@ -642,8 +643,8 @@ router.get('/lea-agencies', async (req, res) => {
     let whereParams = [];
 
     if (search) {
-      whereClause += ' AND (name LIKE ? OR email LIKE ? OR region LIKE ?)';
-      whereParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      whereClause += ' AND (name LIKE ? OR email_hash = ? OR region LIKE ?)';
+      whereParams.push(`%${search}%`, PIIEncryptionService.hashEmail(search), `%${search}%`);
     }
 
     const leas = await Database.query(`

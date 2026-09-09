@@ -20,39 +20,39 @@ class OTPService {
     });
   }
 
-  // Generate a random OTP code
+  // Generate a random OTP code using a cryptographically secure RNG
   generateOTP(length = 6) {
-    const digits = '0123456789';
     let otp = '';
     for (let i = 0; i < length; i++) {
-      otp += digits[Math.floor(Math.random() * digits.length)];
+      otp += crypto.randomInt(0, 10).toString();
     }
     return otp;
   }
 
   // Create and send OTP
   async createOTP(userId, otpType, referenceId = null, expiryMinutes = 10) {
+    let connection;
     try {
-      const connection = await this.pool.getConnection();
-      
+      connection = await this.pool.getConnection();
+
+      // Clean up expired OTPs for this user and type
+      await connection.execute(
+        'DELETE FROM otps WHERE user_id = ? AND otp_type = ? AND expires_at < UTC_TIMESTAMP()',
+        [userId, otpType]
+      );
+
+      // Generate new OTP
+      const otpCode = this.generateOTP();
+      const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
+
+      // Insert new OTP
+      const [result] = await connection.execute(
+        `INSERT INTO otps (user_id, otp_code, otp_type, reference_id, expires_at) 
+         VALUES (?, ?, ?, ?, ?)`,
+        [userId, otpCode, otpType, referenceId, expiresAt]
+      );
+
       try {
-        // Clean up expired OTPs for this user and type
-        await connection.execute(
-          'DELETE FROM otps WHERE user_id = ? AND otp_type = ? AND expires_at < UTC_TIMESTAMP()',
-          [userId, otpType]
-        );
-
-        // Generate new OTP
-        const otpCode = this.generateOTP();
-        const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
-
-        // Insert new OTP
-        const [result] = await connection.execute(
-          `INSERT INTO otps (user_id, otp_code, otp_type, reference_id, expires_at) 
-           VALUES (?, ?, ?, ?, ?)`,
-          [userId, otpCode, otpType, referenceId, expiresAt]
-        );
-
         // Get user details for notification
         const [userRows] = await connection.execute(
           'SELECT name, email, phone FROM users WHERE id = ?',
@@ -72,20 +72,25 @@ class OTPService {
         if (user.phone) {
           await this.sendOTPSMS(user.phone, otpCode, otpType, expiryMinutes);
         }
-
-        return {
-          success: true,
-          otpId: result.insertId,
-          expiresAt,
-          message: 'OTP sent successfully'
-        };
-
-      } finally {
-        connection.release();
+      } catch (error) {
+        // Delivery failed (or user not found) — delete the OTP so an
+        // undelivered code can never be used
+        await connection.execute('DELETE FROM otps WHERE id = ?', [result.insertId]);
+        throw error;
       }
+
+      return {
+        success: true,
+        otpId: result.insertId,
+        expiresAt,
+        message: 'OTP sent successfully'
+      };
+
     } catch (error) {
       console.error('Error creating OTP:', error);
       throw error;
+    } finally {
+      if (connection) connection.release();
     }
   }
 

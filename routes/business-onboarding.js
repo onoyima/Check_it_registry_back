@@ -4,6 +4,7 @@ const Database = require('../config');
 const RevenueService = require('../services/RevenueService');
 const FraudDetectionService = require('../services/FraudDetectionService');
 const NotificationService = require('../services/NotificationService');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { buildUserNameFields, getDisplayName } = require('../utils/user-helpers');
 
@@ -26,13 +27,13 @@ router.post('/onboard', requireRole(['business', 'admin']), async (req, res) => 
 
     // Validate email/phone uniqueness for new customer accounts
     if (customer_email) {
-      const existingEmail = await Database.selectOne('users', 'id', 'email = ?', [customer_email.toLowerCase().trim()]);
+      const existingEmail = await Database.selectOne('users', 'id', 'email_hash = ?', [PIIEncryptionService.hashEmail(customer_email)]);
       if (existingEmail) {
         return res.status(409).json({ error: 'A user with this email already exists. Cannot onboard duplicate account.' });
       }
     }
     if (customer_phone) {
-      const existingPhone = await Database.selectOne('users', 'id', 'phone = ?', [customer_phone.trim()]);
+      const existingPhone = await Database.selectOne('users', 'id', 'phone_hash = ?', [PIIEncryptionService.hashPhone(customer_phone)]);
       if (existingPhone) {
         return res.status(409).json({ error: 'A user with this phone number already exists. Cannot onboard duplicate account.' });
       }

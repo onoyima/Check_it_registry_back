@@ -1,11 +1,31 @@
 // Main Express Server - MySQL Version
 require('dotenv').config();
 const path = require('path');
+
+// Fail-fast environment validation (R4 JWT secret, R5 email provider, R1
+// encryption key, R7 rate-limit sanity, immediate-before-deploy checklist).
+// In production, a missing critical secret aborts startup instead of failing
+// at request time. In dev/test, problems are logged but non-fatal.
+const { validateEnv } = require('./config/env');
+const envProblems = validateEnv({
+  failFast: (process.env.NODE_ENV || 'development') === 'production',
+});
+for (const p of envProblems) {
+  console.warn('[env] ' + p);
+}
+
+// Global async error handlers must be installed BEFORE any routes are
+// registered so every async route handler is protected. In Express 4,
+// rejected promises inside async handlers are NOT automatically forwarded to
+// the error middleware — these installs fix that process-wide.
+const { installGlobalHandlers, installProcessHandlers } = require('./middleware/asyncHandler');
+installGlobalHandlers();
+installProcessHandlers();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
-const rateLimit = require('express-rate-limit');
 const Database = require('./config');
 
 // Import services
@@ -103,23 +123,14 @@ app.use(cors({
 }));
 
 // Rate limiting - enabled for all endpoints
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX) || 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later.' }
-});
+const { apiLimiter, authLimiter } = require('./middleware/limiters');
 app.use('/api/', apiLimiter);
 
-// Stricter rate limit for auth endpoints
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many authentication attempts, please try again later.' }
-});
+// Stricter rate limit for auth endpoints.
+// Tuned so legitimate flows (multi-step login + OTP resend + verify + password
+// reset) do not trip the limiter: env-tunable, 60/15 min by default. The
+// aggressive per-OTP limiter (see middleware/limiters.js otpLimiter) is the
+// real defense against OTP abuse.
 app.use('/api/auth/', authLimiter);
 
 // Body parsing middleware
@@ -325,14 +336,19 @@ app.use('*', (req, res) => {
 app.use(validationErrorHandler);
 
 // Global error handler — captures all errors for the landing page
+// Safest possible error contract: never crashes, never leaks internals,
+// and always returns a well-formed JSON error response.
 app.use((error, req, res, next) => {
+  void next;
   const isDev = process.env.NODE_ENV === 'development';
-  if (isDev) console.error('Global error:', error.message);
+  const message = (error && error.message) || String(error || 'Unknown error');
+  if (isDev) console.error('Global error:', error);
 
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress;
 
   // Track IP failures for potential blocking
-  if (ip && (error.status || 500) >= 400) {
+  const status = error?.status || error?.statusCode || 500;
+  if (ip && status >= 400) {
     const count = (ipFailCount.get(ip) || 0) + 1;
     ipFailCount.set(ip, count);
     if (count >= IP_BLOCK_THRESHOLD) {
@@ -343,9 +359,25 @@ app.use((error, req, res, next) => {
 
   errorStore.capture(error, req);
 
-  res.status(error.status || 500).json({
-    error: isDev ? error.message : 'Internal server error'
-  });
+  // If headers were already sent, we cannot send a JSON body — just terminate
+  // the connection safely instead of throwing "headers already sent".
+  if (res.headersSent) {
+    return req.socket ? req.socket.destroy() : undefined;
+  }
+
+  // In production, never leak raw error messages (they may contain SQL, paths,
+  // or internal details). Always return a clean, structured response.
+  const responseBody = {
+    error: isDev ? message : 'An unexpected error occurred. Please try again.'
+  };
+
+  try {
+    return res.status(status).json(responseBody);
+  } catch (sendErr) {
+    console.error('Global error handler could not send response:', sendErr);
+    try { res.end(); } catch (_) {}
+    return undefined;
+  }
 });
 
 // Graceful shutdown
@@ -361,7 +393,39 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
+async function waitForDatabase(retries = 10, baseDelayMs = 2000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await Database.query('SELECT 1');
+      return;
+    } catch (err) {
+      if (attempt === retries) {
+        throw new Error(`Database unreachable after ${retries} attempts: ${err.message}`);
+      }
+      const delay = baseDelayMs * attempt;
+      console.warn(`[db] Connection attempt ${attempt}/${retries} failed (${err.message}); retrying in ${delay}ms`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
 async function startServer() {
+  // Wait for MySQL with retry/backoff so a temporarily unavailable database
+  // (e.g. container still warming up) does not cause a transient boot failure
+  // or a flood of connection errors. In production this is a hard requirement
+  // before migrations and listening.
+  try {
+    await waitForDatabase();
+  } catch (err) {
+    console.error('[db] ' + err.message);
+    if (process.env.NODE_ENV === 'production') {
+      console.error('Aborting startup: database is required in production.');
+      process.exit(1);
+    }
+    // Non-production: continue so the app (and its health/error endpoints)
+    // still come up; DB-backed requests will surface their own errors.
+  }
+
   try {
     await runMigrations();
   } catch (err) {

@@ -7,6 +7,7 @@ const Database = require('../config');
 const { authenticateToken } = require('../middleware/auth');
 const ArchiveService = require('../services/ArchiveService');
 const OTPService = require('../services/OTPService');
+const FileUploadService = require('../services/FileUploadService');
 const { 
   validateProfileUpdate, 
   validatePasswordChange, 
@@ -161,7 +162,6 @@ router.post('/image', authenticateToken, upload.single('image'), async (req, res
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    const FileUploadService = require('../services/FileUploadService');
     const result = await FileUploadService.processSingleFile(
       req.file.buffer, req.file.originalname, req.file.mimetype, 'profile_image', req.user.id
     );

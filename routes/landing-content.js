@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const Database = require('../config');
+const CacheService = require('../services/CacheService');
 
 const router = express.Router();
 
@@ -40,7 +41,6 @@ router.post('/setup', authenticateToken, requireAdmin, async (req, res) => {
 // GET / - Public fetch of landing content (cached for 5 minutes)
 router.get('/', async (req, res) => {
     try {
-        const CacheService = require('../services/CacheService');
         const cacheKey = CacheService.constructor.key('landing', 'content');
         let data = CacheService.get(cacheKey);
 

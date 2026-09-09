@@ -3,7 +3,11 @@ const request = require('supertest');
 const { app } = require('../app');
 const { TestUtils } = require('./setup');
 
-describe('Public Check API', () => {
+// Requires a real test database (mysql2). Skips cleanly when none is reachable —
+// see tests/db-check.js.
+const describeDb = global.__DB_OK__ ? describe : describe.skip;
+
+describeDb('Public Check API', () => {
   beforeEach(async () => {
     await TestUtils.cleanupTestDatabase();
   });

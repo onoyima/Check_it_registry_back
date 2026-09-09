@@ -2,7 +2,11 @@ const request = require('supertest');
 const { app } = require('../app');
 const Database = require('../config');
 
-describe('Enhanced Features API Tests', () => {
+// Requires a real test database (mysql2). Skips cleanly when none is reachable —
+// see tests/db-check.js.
+const describeDb = global.__DB_OK__ ? describe : describe.skip;
+
+describeDb('Enhanced Features API Tests', () => {
   let authToken;
   let adminToken;
   let testUserId;
@@ -528,7 +532,7 @@ describe('Enhanced Features API Tests', () => {
 });
 
 // Performance tests
-describe('Performance Tests', () => {
+describeDb('Performance Tests', () => {
   let authToken;
 
   beforeAll(async () => {

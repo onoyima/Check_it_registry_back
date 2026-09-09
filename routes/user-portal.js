@@ -43,14 +43,15 @@ router.get('/search-users', async (req, res) => {
       return res.json({ users: [] });
     }
 
-    // Exclude current user and limit results
+    // Exclude current user and limit results.
+    // Email is encrypted at rest — suggestion search matches names only.
     const users = await Database.query(
       `SELECT id, name, first_name, middle_name, last_name, email
        FROM users
-       WHERE id <> ? AND (email LIKE ? OR name LIKE ?)
+       WHERE id <> ? AND name LIKE ?
        ORDER BY name ASC
        LIMIT 10`,
-      [req.user.id, `%${q}%`, `%${q}%`]
+      [req.user.id, `%${q}%`]
     );
 
     res.json({ users });
@@ -756,13 +757,14 @@ router.get('/search-users', async (req, res) => {
       return res.json({ success: true, users: [] });
     }
 
-    // Limit suggestions and exclude sensitive fields
+    // Limit suggestions and exclude sensitive fields.
+    // Email is encrypted at rest, so suggestion search matches names only.
     const users = await Database.query(
       `SELECT id, name, first_name, middle_name, last_name, email FROM users 
-       WHERE email LIKE ? OR name LIKE ?
+       WHERE name LIKE ?
        ORDER BY created_at DESC
        LIMIT 10`,
-      [`%${query}%`, `%${query}%`]
+      [`%${query}%`]
     );
 
     res.json({ success: true, users });

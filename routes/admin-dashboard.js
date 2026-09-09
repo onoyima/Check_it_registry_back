@@ -3,6 +3,9 @@ const express = require('express');
 const Database = require('../config');
 const { authenticateToken } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
+const NotificationService = require('../services/NotificationService');
+const EmailTemplate = require('../services/EmailTemplate');
+const PIIEncryptionService = require('../services/PIIEncryptionService');
 
 const router = express.Router();
 
@@ -178,8 +181,10 @@ router.get('/users', async (req, res) => {
     let params = [];
 
     if (search) {
-      whereClause += ' AND (name LIKE ? OR email LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`);
+      // Email is encrypted at rest — name is matched by LIKE, a full email still
+      // resolves through its lookup hash.
+      whereClause += ' AND (name LIKE ? OR email_hash = ?)';
+      params.push(`%${search}%`, PIIEncryptionService.hashEmail(search));
     }
 
     if (role) {
@@ -572,8 +577,6 @@ router.put('/devices/:id', async (req, res) => {
     // Send notification to device owner if status changed
     if (status && status !== currentDevice.status) {
       const owner = await Database.selectOne('users', 'name, email', 'id = ?', [currentDevice.user_id]);
-      const NotificationService = require('../services/NotificationService');
-      const EmailTemplate = require('../services/EmailTemplate');
       
       let subject, content;
       
@@ -874,10 +877,10 @@ router.get('/lea-directory', async (req, res) => {
       SELECT id, name, first_name, last_name, email, agency_id, region,
         CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE 'active' END as status
       FROM users
-      WHERE role = 'lea' AND (name LIKE ? OR email LIKE ? OR COALESCE(agency_id, '') LIKE ?)
+      WHERE role = 'lea' AND (name LIKE ? OR email_hash = ? OR COALESCE(agency_id, '') LIKE ?)
       ORDER BY name ASC
       LIMIT ?
-    `, [like, like, like, parseInt(limit)]);
+    `, [like, PIIEncryptionService.hashEmail(search), like, parseInt(limit)]);
 
     res.json({ users: leaUsers });
   } catch (error) {

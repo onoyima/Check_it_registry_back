@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs').promises;
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const FileUploadService = require('../services/FileUploadService');
+const Database = require('../config');
+const fsStream = require('fs');
 
 const router = express.Router();
 
@@ -11,7 +13,6 @@ const router = express.Router();
 router.get('/view/device-image/:deviceId', async (req, res) => {
   try {
     const { deviceId } = req.params;
-    const Database = require('../config');
     const row = await Database.selectOne(
       'devices',
       'device_image_blob, device_image_mime, device_image_filename, device_image_url',
@@ -54,7 +55,6 @@ router.get('/view/device-image/:deviceId', async (req, res) => {
 router.get('/view/proof/:deviceId', authenticateToken, async (req, res) => {
   try {
     const { deviceId } = req.params;
-    const Database = require('../config');
     const row = await Database.selectOne(
       'devices',
       'proof_blob, proof_mime, proof_filename, proof_url',
@@ -82,7 +82,7 @@ router.get('/view/proof/:deviceId', authenticateToken, async (req, res) => {
         } else {
           res.setHeader('Content-Disposition', `attachment; filename="${row.proof_filename || 'proof-document'}"`);
         }
-        require('fs').createReadStream(filePath).pipe(res);
+        fsStream.createReadStream(filePath).pipe(res);
         return;
       } catch (err) {
         return res.status(404).json({ error: 'Proof document not found on disk' });
@@ -142,7 +142,6 @@ router.get('/view/:subdir/:filename', async (req, res) => {
       
       if (token) {
         try {
-          const Database = require('../config');
           user = Database.verifyJWT(token);
         } catch (error) {
           return res.status(401).json({ error: 'Invalid token' });
@@ -150,7 +149,6 @@ router.get('/view/:subdir/:filename', async (req, res) => {
       } else if (req.headers.authorization) {
         try {
           const authToken = req.headers.authorization.split(' ')[1];
-          const Database = require('../config');
           user = Database.verifyJWT(authToken);
         } catch (error) {
           return res.status(401).json({ error: 'Invalid authorization' });
@@ -194,7 +192,7 @@ router.get('/view/:subdir/:filename', async (req, res) => {
     }
 
     // Stream the file
-    const fileStream = require('fs').createReadStream(filePath);
+    const fileStream = fsStream.createReadStream(filePath);
     fileStream.pipe(res);
 
   } catch (error) {

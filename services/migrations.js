@@ -618,6 +618,198 @@ const MIGRATIONS = [
       console.log('  ✓ Archive, soft-delete, security questions, and ownership history tables created');
     }
   },
+  {
+    // R2 fix — backfill split first/middle/last name fields from the legacy single 'name'
+    // column for rows that only have the legacy name populated. This keeps the two data
+    // models consistent so display-name helpers work everywhere.
+    name: '017_backfill_split_name_fields',
+    sql: [],
+    seed: async () => {
+      const rows = await db.query(
+        "SELECT id, name, first_name, middle_name, last_name FROM users WHERE (first_name IS NULL OR first_name = '') AND (name IS NOT NULL AND name <> '')"
+      );
+      let updated = 0;
+      for (const row of rows) {
+        const parts = (row.name || '').trim().split(/\s+/).filter(Boolean);
+        if (parts.length === 0) continue;
+        const first = parts[0];
+        let middle = null;
+        let last = null;
+        if (parts.length === 2) {
+          last = parts[1];
+        } else if (parts.length >= 3) {
+          middle = parts.slice(1, -1).join(' ');
+          last = parts[parts.length - 1];
+        }
+        await db.query(
+          'UPDATE users SET first_name = ?, middle_name = ?, last_name = ? WHERE id = ?',
+          [first, middle, last, row.id]
+        );
+        updated++;
+      }
+      console.log(`  ✓ Name backfill complete: ${updated} user(s) updated`);
+    }
+  },
+  {
+    // R3 fix — make soft-deleted / orphaned foreign-key references safe. Rather than
+    // dropping rows, we ensure indexes exist that the audit/cleanup jobs and queries
+    // rely on, and index the commonly-joined columns to avoid slow full scans on joins.
+    name: '018_orphan_safety_indexes',
+    // NOTE: MySQL does NOT support "CREATE INDEX IF NOT EXISTS" (MariaDB only),
+    // so we check information_schema.statistics first and create each index only
+    // if missing. This is registered as a seed (not sql) so each statement is
+    // guarded and the whole migration is idempotent.
+    sql: [],
+    seed: async () => {
+      // NOTE: verify actual column names — the live schema uses `reporter_id`
+      // on reports and `from_user_id`/`to_user_id` on device_transfers (not
+      // user_id / buyer_id / seller_id). Migration 007 already added composite
+      // indexes whose leading columns cover most FK joins; the entries below
+      // that are NOT redundant with 007 are reports(assigned_lea_id) and
+      // device_transfers(device_id). Each is created only if the exact index
+      // name is absent and the column exists, so this is idempotent on any DB.
+      const toCreate = [
+        ['reports', 'assigned_lea_id', 'idx_reports_assigned_lea'],
+        ['device_transfers', 'device_id', 'idx_transfer_device'],
+        ['devices', 'user_id', 'idx_devices_user_id'],
+        ['reports', 'reporter_id', 'idx_reports_reporter'],
+        ['reports', 'device_id', 'idx_reports_device_id'],
+        ['device_transfers', 'from_user_id', 'idx_transfer_from_user'],
+        ['device_transfers', 'to_user_id', 'idx_transfer_to_user'],
+        ['notifications', 'user_id', 'idx_notifications_user'],
+      ];
+      for (const [table, column, indexName] of toCreate) {
+        try {
+          const existing = await db.query(
+            'SELECT COUNT(*) AS c FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, indexName]
+          );
+          if (existing[0].c > 0) {
+            continue; // already present
+          }
+          const canIndex = await db.query(
+            'SELECT COUNT(*) AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+            [table, column]
+          );
+          if (canIndex[0].c === 0) {
+            console.warn(`  ⚠ Cannot index ${table}.${column} — column does not exist (skipping)`);
+            continue;
+          }
+          await db.query(`CREATE INDEX ${indexName} ON ${table} (${column})`);
+          console.log(`  ✓ index ${indexName} created on ${table}(${column})`);
+        } catch (err) {
+          console.error(`  ✗ Failed to create index ${indexName} on ${table}:`, err.message);
+        }
+      }
+    },
+  },
+  {
+    // PII-at-rest support — adds deterministic SHA-256 lookup columns so identity
+    // lookups (login, dedupe, transfers, reset-password) keep working after
+    // users.email / users.phone are stored encrypted. Runs before encryption is
+    // applied, so the plaintext backfill below computes hashes of readable values.
+    // Re-runs against an already-encrypted DB are safe: hashes are only written
+    // where still NULL (encryption sets them explicitly).
+    name: '019_pii_lookup_hash_columns',
+    sql: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_hash CHAR(64) NULL`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_hash CHAR(64) NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_users_email_hash ON users (email_hash)`,
+      `CREATE INDEX IF NOT EXISTS idx_users_phone_hash ON users (phone_hash)`,
+    ],
+    seed: async () => {
+      // This MySQL does not support "IF NOT EXISTS" on ALTER/CREATE INDEX, so guard
+      // each column/index with information_schema lookups and skip what exists.
+      const hasColumn = async (column) => {
+        const res = await db.query(
+          'SELECT COUNT(*) AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+          ['users', column]
+        );
+        return res[0].c > 0;
+      };
+      const addColumn = async (column, definition) => {
+        if (await hasColumn(column)) return false;
+        await db.query(`ALTER TABLE users ADD COLUMN ${definition}`);
+        return true;
+      };
+      const addIndex = async (indexName, column) => {
+        if (!(await hasColumn(column))) return false;
+        const res = await db.query(
+          'SELECT COUNT(*) AS c FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+          ['users', indexName]
+        );
+        if (res[0].c > 0) return false;
+        await db.query(`CREATE INDEX ${indexName} ON users (${column})`);
+        return true;
+      };
+
+      if (await addColumn('email_hash', 'email_hash CHAR(64) NULL')) console.log('  ✓ users.email_hash added');
+      if (await addColumn('phone_hash', 'phone_hash CHAR(64) NULL')) console.log('  ✓ users.phone_hash added');
+      if (await addIndex('idx_users_email_hash', 'email_hash')) console.log('  ✓ idx_users_email_hash created');
+      if (await addIndex('idx_users_phone_hash', 'phone_hash')) console.log('  ✓ idx_users_phone_hash created');
+
+      // Backfill hashes from the still-plaintext columns (runs before encryption).
+      const result = await db.query(
+        `UPDATE users SET
+           email_hash = COALESCE(email_hash, SHA2(LOWER(TRIM(email)), 256))
+         WHERE email_hash IS NULL AND email IS NOT NULL AND email <> ''`
+      );
+      await db.query(
+        `UPDATE users SET
+           phone_hash = COALESCE(phone_hash, SHA2(TRIM(phone), 256))
+         WHERE phone_hash IS NULL AND phone IS NOT NULL AND phone <> ''`
+      );
+      console.log(`  ✓ hash backfill complete (${JSON.stringify(result[0])})`);
+    },
+  },
+  {
+    // Deleted-account PII at rest: users.original_email (set only for deleted
+    // accounts) is encrypted like email, so admin restore/listing needed a
+    // lookup hash too. The hash backfill only touches still-plaintext values —
+    // already-encrypted blobs (newer deletions) are skipped so a hash of the
+    // ciphertext is never stored.
+    name: '020_pii_deletion_fields',
+    sql: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS original_email_hash CHAR(64) NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_users_original_email_hash ON users (original_email_hash)`,
+    ],
+    seed: async () => {
+      const hasColumn = async (column) => {
+        const res = await db.query(
+          'SELECT COUNT(*) AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+          ['users', column]
+        );
+        return res[0].c > 0;
+      };
+      const addColumn = async (column, definition) => {
+        if (await hasColumn(column)) return false;
+        await db.query(`ALTER TABLE users ADD COLUMN ${definition}`);
+        return true;
+      };
+      const addIndex = async (indexName, column) => {
+        if (!(await hasColumn(column))) return false;
+        const res = await db.query(
+          'SELECT COUNT(*) AS c FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+          ['users', indexName]
+        );
+        if (res[0].c > 0) return false;
+        await db.query(`CREATE INDEX ${indexName} ON users (${column})`);
+        return true;
+      };
+
+      if (await addColumn('original_email_hash', 'original_email_hash CHAR(64) NULL')) console.log('  ✓ users.original_email_hash added');
+      if (await addIndex('idx_users_original_email_hash', 'original_email_hash')) console.log('  ✓ idx_users_original_email_hash created');
+
+      const result = await db.query(
+        `UPDATE users SET
+           original_email_hash = COALESCE(original_email_hash, SHA2(LOWER(TRIM(original_email)), 256))
+         WHERE original_email_hash IS NULL
+           AND original_email IS NOT NULL AND original_email <> ''
+           AND original_email NOT REGEXP '^[0-9a-f]{32}:[0-9a-f]+$'`
+      );
+      console.log(`  ✓ original_email hash backfill complete (${JSON.stringify(result[0])})`);
+    },
+  },
 ];
 
 async function runMigrations() {
