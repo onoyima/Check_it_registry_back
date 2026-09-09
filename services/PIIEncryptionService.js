@@ -71,28 +71,32 @@ class PIIEncryptionService {
     return crypto.createHash('sha256').update(String(phone).trim()).digest('hex');
   }
 
-  // Takes a users/account_deletions insert/update payload. Encrypts plaintext
-  // contact fields (never double-encrypts) and attaches the matching lookup
-  // hashes, so callers can pass normal plaintext values and get a DB-safe object
-  // back. `original_email` is the deleted-account email on the users table so
-  // admin restore works without leaving plaintext PII at rest.
+  // Takes a users/account_deletions/business_profiles insert/update payload.
+  // Encrypts plaintext contact fields (never double-encrypts) and, where the
+  // table needs lookup support, attaches the matching deterministic hash, so
+  // callers can pass plaintext values and get a DB-safe object back.
+  // `original_email` is the deleted-account email on the users table; the
+  // business_* fields are profile data (never looked up, hence no hash columns).
   // In NODE_ENV=test the values are kept plaintext (the test DB is ephemeral and
   // tests manipulate rows directly) but hashes are still written so the
   // hash-based identity lookups behave the same as in production.
   static encryptContactFields(data) {
     const out = { ...data };
     const shouldEncrypt = process.env.NODE_ENV !== 'test';
-    for (const field of ['email', 'phone', 'original_email']) {
-      const value = out[field];
+    const specs = [
+      { field: 'email', hashField: 'email_hash', hashFn: 'hashEmail' },
+      { field: 'phone', hashField: 'phone_hash', hashFn: 'hashPhone' },
+      { field: 'original_email', hashField: 'original_email_hash', hashFn: 'hashEmail' },
+      { field: 'business_email', hashField: null },
+      { field: 'business_phone', hashField: null },
+    ];
+    for (const spec of specs) {
+      const value = out[spec.field];
       if (typeof value === 'string' && value.length > 0 && !this.isEncrypted(value)) {
-        if (field === 'email') out.email_hash = this.hashEmail(value);
-        if (field === 'phone') out.phone_hash = this.hashPhone(value);
-        if (field === 'original_email') out.original_email_hash = this.hashEmail(value);
-        if (shouldEncrypt) out[field] = this.encrypt(value);
-      } else if (value == null) {
-        if (field === 'email' && 'email_hash' in out === false) out.email_hash = null;
-        if (field === 'phone' && 'phone_hash' in out === false) out.phone_hash = null;
-        if (field === 'original_email' && 'original_email_hash' in out === false) out.original_email_hash = null;
+        if (spec.hashField) out[spec.hashField] = this[spec.hashFn](value);
+        if (shouldEncrypt) out[spec.field] = this.encrypt(value);
+      } else if (value == null && spec.hashField && spec.hashField in out === false) {
+        out[spec.hashField] = null;
       }
     }
     return out;

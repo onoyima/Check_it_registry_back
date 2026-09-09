@@ -78,11 +78,12 @@ class Database {
   }
 
   static async insert(table, data) {
-    // users PII write boundary: email/phone are always stored encrypted with
-    // email_hash/phone_hash lookup columns attached (see update()).
-    // account_deletions stores the deleted owner's original_email for restore;
-    // it is encrypted the same way so deleted identities are not plaintext at rest.
-    const safe = (table === 'users' || table === 'account_deletions')
+    // PII write boundary (users/account_deletions/business_profiles): contact
+    // fields are always stored encrypted (see update()). account_deletions keeps
+    // the deleted owner's original_email for restore; business_profiles keeps the
+    // business contact email/phone — all encrypted so contact PII is never
+    // plaintext at rest.
+    const safe = (table === 'users' || table === 'account_deletions' || table === 'business_profiles')
       ? PIIEncryptionService.encryptContactFields(data)
       : data;
     const keys = Object.keys(safe);
@@ -99,11 +100,11 @@ class Database {
   }
 
   static async update(table, data, where, whereParams = []) {
-    // PII write boundary (users/account_deletions only): plaintext email/phone
-    // are encrypted before reaching SQL, with email_hash/phone_hash attached for
-    // identity lookups. Already-encrypted values are never double-encrypted.
-    // Other tables are written verbatim.
-    const safe = (table === 'users' || table === 'account_deletions')
+    // PII write boundary (users/account_deletions/business_profiles only):
+    // plaintext contact fields are encrypted before reaching SQL, with lookup
+    // hashes attached where the table uses them. Already-encrypted values are
+    // never double-encrypted. Other tables are written verbatim.
+    const safe = (table === 'users' || table === 'account_deletions' || table === 'business_profiles')
       ? PIIEncryptionService.encryptContactFields(data)
       : data;
     const keys = Object.keys(safe);

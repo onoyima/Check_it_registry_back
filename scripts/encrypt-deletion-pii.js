@@ -3,6 +3,7 @@
 //  2. account_deletions.original_email → encrypted at rest (restore still works)
 //  3. account_deletions.snapshot  → sensitive fields stripped from the JSON blob
 //  4. device_archives.snapshot    → sensitive fields stripped from the JSON blob
+//  5. business_profiles.business_email / business_phone → encrypted at rest
 //
 // Reads go through a RAW connection (NOT Database.query) so already-encrypted
 // values are never decrypted back to plaintext and re-encrypted (double-encrypt).
@@ -69,6 +70,23 @@ async function main() {
     }
     console.log(`${table}.snapshot redacted: ${done}, already-clean/untouched skipped: ${skip}`);
   }
+
+  // 5. business_profiles.business_email / business_phone (contact PII, never
+  //    looked up by value → encrypted, no hash columns required).
+  const bizRows = await raw(
+    'SELECT id, business_email, business_phone FROM business_profiles WHERE business_email IS NOT NULL OR business_phone IS NOT NULL'
+  );
+  let bDone = 0, bSkip = 0;
+  for (const r of bizRows) {
+    const patch = {};
+    let touched = false;
+    if (r.business_email && !isEncrypted(r.business_email)) { patch.business_email = r.business_email; touched = true; }
+    if (r.business_phone && !isEncrypted(r.business_phone)) { patch.business_phone = r.business_phone; touched = true; }
+    if (!touched) { bSkip++; continue; }
+    await Database.update('business_profiles', patch, 'id = ?', [r.id]);
+    bDone++;
+  }
+  console.log(`business_profiles contact fields encrypted: ${bDone}, already-encrypted/empty skipped: ${bSkip}`);
 
   await conn.end();
   console.log('Done.');
