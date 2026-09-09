@@ -29,8 +29,10 @@ class OTPService {
     return otp;
   }
 
-  // Create and send OTP
-  async createOTP(userId, otpType, referenceId = null, expiryMinutes = 10) {
+  // Create and send OTP. `context` is optional extra email content for the
+  // device_login type (device/browser/OS/IP) so the OTP and the new-device
+  // security notice ship as a SINGLE email instead of two.
+  async createOTP(userId, otpType, referenceId = null, expiryMinutes = 10, context = null) {
     let connection;
     try {
       connection = await this.pool.getConnection();
@@ -53,20 +55,16 @@ class OTPService {
       );
 
       try {
-        // Get user details for notification
-        const [userRows] = await connection.execute(
-          'SELECT name, email, phone FROM users WHERE id = ?',
-          [userId]
-        );
+        // Get user details for notification (via Database so the read-hook
+        // decrypts email/phone — a raw pool read here returns ciphertext).
+        const user = await Database.selectOne('users', 'name, email, phone', 'id = ?', [userId]);
 
-        if (userRows.length === 0) {
+        if (!user) {
           throw new Error('User not found');
         }
 
-        const user = userRows[0];
-
         // Send OTP via email
-        await this.sendOTPEmail(user, otpCode, otpType, expiryMinutes);
+        await this.sendOTPEmail(user, otpCode, otpType, expiryMinutes, context);
 
         // Send OTP via SMS if phone number exists
         if (user.phone) {
@@ -156,8 +154,20 @@ class OTPService {
     }
   }
 
-  // Send OTP via email
-  async sendOTPEmail(user, otpCode, otpType, expiryMinutes) {
+  // Send OTP via email. For device_login, `context` (device/browser/OS/IP/time)
+  // is merged into the SAME email so the user gets one combined message.
+  async sendOTPEmail(user, otpCode, otpType, expiryMinutes, context = null) {
+    const loginDetailsBlock = context && context.deviceInfo ? `
+          <div style="background:#F3F4F6; border-radius:8px; padding:16px; margin:15px 0;">
+            <table cellpadding="4" cellspacing="0" style="font-size:14px; color:#374151;">
+              <tr><td style="font-weight:600; padding-right:12px;">Device:</td><td>${context.deviceInfo.device || 'Unknown'}</td></tr>
+              <tr><td style="font-weight:600; padding-right:12px;">Browser:</td><td>${context.deviceInfo.browser || 'Unknown'}</td></tr>
+              <tr><td style="font-weight:600; padding-right:12px;">OS:</td><td>${context.deviceInfo.os || 'Unknown'}</td></tr>
+              <tr><td style="font-weight:600; padding-right:12px;">IP Address:</td><td>${context.ipAddress || 'Unknown'}</td></tr>
+              <tr><td style="font-weight:600; padding-right:12px;">Time:</td><td>${new Date().toLocaleString()}</td></tr>
+            </table>
+          </div>
+        ` : '';
     const templates = {
       email_verification: {
         subject: 'Verify Your Email',
@@ -222,6 +232,7 @@ class OTPService {
             <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
           </div>
           <p style="color: #6B7280;">This code will expire in <strong>${expiryMinutes} minutes</strong>.</p>
+          ${loginDetailsBlock}
           <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
             <p style="margin: 0; color: #92400E; font-size: 14px;"><strong>Security Tip:</strong> You can choose to "Remember this device" to avoid verification codes for future logins from this device.</p>
           </div>

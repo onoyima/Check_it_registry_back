@@ -359,9 +359,13 @@ router.post('/login', async (req, res) => {
     
     // If device is not trusted and OTP is enabled, require OTP verification
     if (!isDeviceTrusted && enableOtp) {
-      // Create OTP for device verification (wrap so email/DB failures don't break login)
+      const deviceInfo = DeviceSecurityService.parseUserAgent(req.get('User-Agent'));
+
+      // Create OTP for device verification. The OTP email now ALSO carries the
+      // device/security details — a single combined email, not two. The failure
+      // is wrapped so email/DB issues don't block the login response.
       try {
-        await OTPService.createOTP(user.id, 'device_login', deviceFingerprint, 10); // 10 minutes
+        await OTPService.createOTP(user.id, 'device_login', deviceFingerprint, 10, { deviceInfo, ipAddress: req.ip }); // 10 minutes
       } catch (otpError) {
         console.error('OTP creation failed (continuing login):', otpError.message);
       }
@@ -374,15 +378,6 @@ router.post('/login', async (req, res) => {
         console.error('Device session creation failed (continuing login):', sessionError.message);
         sessionInfo = { deviceFingerprint, isTrusted: false };
       }
-
-      // Send device login notification (fire-and-forget — don't block login)
-      const deviceInfo = DeviceSecurityService.parseUserAgent(req.get('User-Agent'));
-      DeviceSecurityService.sendDeviceLoginNotification(
-        user.id, 
-        deviceInfo, 
-        req.ip, 
-        true // New device
-      ).catch(err => console.error('Login notification error:', err));
 
       return res.status(200).json({
         requires_device_verification: true,

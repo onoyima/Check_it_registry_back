@@ -3,6 +3,7 @@ const TermiiService = require('./TermiiService');
 const webpush = require('web-push');
 const { logActivity } = require('./AuditService');
 const EmailTemplate = require('./EmailTemplate');
+const Database = require('../config');
 
 class EnhancedNotificationService {
   constructor() {
@@ -89,13 +90,17 @@ class EnhancedNotificationService {
           transfer_notifications,
           verification_notifications,
           report_updates,
-          marketing_emails,
-          phone
+          marketing_emails
         FROM users 
         WHERE id = ?
       `, [userId]);
 
-      return rows[0] || {};
+      const prefs = rows[0] || {};
+      // phone is encrypted at rest — read it through Database so it is decrypted
+      // (bare notification flags above are not PII, so the raw connection is fine).
+      const user = await Database.selectOne('users', 'phone', 'id = ?', [userId]);
+      if (user) prefs.phone = user.phone;
+      return prefs;
     } catch (error) {
       console.error('Error fetching user preferences:', error);
       return {};
@@ -106,14 +111,9 @@ class EnhancedNotificationService {
   async sendDeviceVerificationUpdate(connection, userId, device, approved, notes = null) {
     try {
       const preferences = await this.getUserPreferences(connection, userId);
-      const [userRows] = await connection.execute(
-        'SELECT name, email FROM users WHERE id = ?',
-        [userId]
-      );
+      const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
+      if (!user) return;
 
-      if (userRows.length === 0) return;
-
-      const user = userRows[0];
       const status = approved ? 'approved' : 'rejected';
       const deviceName = `${device.brand} ${device.model}`;
 
@@ -183,14 +183,9 @@ class EnhancedNotificationService {
   async sendDeviceAlert(connection, userId, device, alertType, details) {
     try {
       const preferences = await this.getUserPreferences(connection, userId);
-      const [userRows] = await connection.execute(
-        'SELECT name, email FROM users WHERE id = ?',
-        [userId]
-      );
+      const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
+      if (!user) return;
 
-      if (userRows.length === 0) return;
-
-      const user = userRows[0];
       const deviceName = `${device.brand} ${device.model}`;
 
       if (preferences.email_notifications && preferences.device_alerts) {
@@ -271,14 +266,9 @@ class EnhancedNotificationService {
   async sendReportStatusUpdate(connection, userId, report, oldStatus, newStatus) {
     try {
       const preferences = await this.getUserPreferences(connection, userId);
-      const [userRows] = await connection.execute(
-        'SELECT name, email FROM users WHERE id = ?',
-        [userId]
-      );
+      const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
+      if (!user || !preferences.email_notifications || !preferences.report_updates) return;
 
-      if (userRows.length === 0 || !preferences.email_notifications || !preferences.report_updates) return;
-
-      const user = userRows[0];
       const statusColors = {
         'open': '#F59E0B',
         'under_review': '#3B82F6',
@@ -329,14 +319,9 @@ class EnhancedNotificationService {
   // Send welcome email to new users
   async sendWelcomeEmail(connection, userId) {
     try {
-      const [userRows] = await connection.execute(
-        'SELECT name, email, role FROM users WHERE id = ?',
-        [userId]
-      );
+      const user = await Database.selectOne('users', 'name, email, role', 'id = ?', [userId]);
+      if (!user) return;
 
-      if (userRows.length === 0) return;
-
-      const user = userRows[0];
       const subject = `Welcome to Prove Ownership!`;
       
       const content = `
@@ -407,14 +392,8 @@ class EnhancedNotificationService {
       
       for (const userId of userIds) {
         const preferences = await this.getUserPreferences(connection, userId);
-        const [userRows] = await connection.execute(
-          'SELECT name, email FROM users WHERE id = ?',
-          [userId]
-        );
-
-        if (userRows.length === 0) continue;
-
-        const user = userRows[0];
+        const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
+        if (!user) continue;
 
         if (preferences.email_notifications) {
           const personalizedContent = htmlContent.replace(/\{name\}/g, user.name);

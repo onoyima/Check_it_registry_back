@@ -41,17 +41,13 @@ class EmailVerificationService {
       const connection = await this.pool.getConnection();
       
       try {
-        // Get user details first (needed for email even if DB insert fails)
-        const [userRows] = await connection.execute(
-          'SELECT name, email FROM users WHERE id = ?',
-          [userId]
-        );
+        // Get user details first (needed for email even if DB insert fails).
+        // Read via Database so the read-hook decrypts the address.
+        const user = await Database.selectOne('users', 'name, email', 'id = ?', [userId]);
 
-        if (userRows.length === 0) {
+        if (!user) {
           throw new Error('User not found');
         }
-
-        const user = userRows[0];
 
         const token = this.generateToken(userId);
         const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
