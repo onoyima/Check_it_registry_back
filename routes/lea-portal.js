@@ -164,7 +164,10 @@ router.get('/alerts/device-checks', async (req, res) => {
     const rows = await Database.query(`
       SELECT 
         dcl.*, 
-        d.brand, d.model, d.imei, d.serial,
+d.brand as device_brand,
+        d.model as device_model,
+        d.imei,
+        d.serial,
         owner.name AS owner_name, owner.first_name AS owner_first_name, owner.middle_name AS owner_middle_name, owner.last_name AS owner_last_name, owner.email AS owner_email, owner.phone AS owner_phone, owner.region AS owner_region,
         checker.name AS checker_name, checker.first_name AS checker_first_name, checker.middle_name AS checker_middle_name, checker.last_name AS checker_last_name, checker.email AS checker_email, checker.phone AS checker_phone
       FROM device_check_logs dcl
@@ -190,7 +193,7 @@ router.get('/cases', async (req, res) => {
   try {
     const userId = req.user.id;
     const userRegion = req.user.region;
-    const { status, type, page = 1, limit = 20 } = req.query;
+    const { status, type, page = 1, limit = 20, search } = req.query;
 
     // Build filters
     let whereClause = '1=1';
@@ -210,6 +213,12 @@ router.get('/cases', async (req, res) => {
     if (type) {
       whereClause += ' AND r.report_type = ?';
       params.push(type);
+    }
+
+    if (search && String(search).trim()) {
+      whereClause += ` AND (r.case_id LIKE ? OR d.brand LIKE ? OR d.model LIKE ? OR d.imei LIKE ? OR d.serial LIKE ? OR u.name LIKE ?)`;
+      const term = `%${String(search).trim()}%`;
+      params.push(term, term, term, term, term, term);
     }
 
     const offset = (page - 1) * limit;
@@ -356,7 +365,7 @@ router.get('/recovery', async (req, res) => {
 
     const records = await Database.query(`
       SELECT
-        r.id, r.case_id, r.report_type, r.status, r.description as notes, r.created_at, r.updated_at,
+        r.id, r.case_id, r.report_type, r.status, r.description as notes, r.location, r.created_at, r.updated_at,
         d.brand as device_brand, d.model as device_model, d.imei, d.serial,
         u.name as owner_name, u.first_name as owner_first_name, u.middle_name as owner_middle_name, u.last_name as owner_last_name, u.email as owner_email, u.phone as owner_phone,
         (SELECT name FROM users WHERE id = r.assigned_lea_id) as recovered_by,
@@ -380,6 +389,62 @@ router.get('/recovery', async (req, res) => {
   } catch (error) {
     console.error('LEA recovery error:', error);
     res.status(500).json({ error: 'Failed to load recovery records' });
+  }
+});
+
+// GET /api/lea-portal/recovery/:id - Single recovery operation details
+router.get('/recovery/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userRegion = req.user.region;
+    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionParams = req.user.role === 'admin' ? [] : [userRegion];
+
+    const rows = await Database.query(`
+      SELECT
+        r.id, r.case_id, r.report_type, r.status, r.description as notes, r.location,
+        r.occurred_at, r.created_at, r.updated_at, r.lea_notes,
+        d.id as device_id, d.brand as device_brand, d.model as device_model, d.imei, d.serial, d.color,
+        d.device_image_url, d.proof_url,
+        u.id as owner_id, u.name as owner_name, u.first_name as owner_first_name,
+        u.middle_name as owner_middle_name, u.last_name as owner_last_name,
+        u.email as owner_email, u.phone as owner_phone, u.region as owner_region,
+        lea.agency_name as recovered_by_agency,
+        reporter.name as reporter_name, reporter.first_name as reporter_first_name,
+        reporter.middle_name as reporter_middle_name, reporter.last_name as reporter_last_name,
+        (SELECT name FROM users WHERE id = r.assigned_lea_id) as recovered_by,
+        (SELECT updated_at FROM reports WHERE id = r.id AND status = 'resolved') as recovered_at
+      FROM reports r
+      JOIN devices d ON r.device_id = d.id
+      JOIN users u ON d.user_id = u.id
+      LEFT JOIN law_enforcement_agencies lea ON r.assigned_lea_id = lea.id
+      LEFT JOIN users reporter ON r.reporter_id = reporter.id
+      WHERE r.report_type IN ('stolen', 'lost', 'found') AND (r.id = ? OR r.case_id = ?)
+      ${regionFilter}
+    `, [id, id, ...regionParams]);
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: 'Recovery record not found' });
+    }
+
+    const record = rows[0];
+
+    const history = await Database.query(`
+      SELECT
+        al.id, al.action, al.new_values, al.created_at,
+        ulog.name as user_name, ulog.first_name as user_first_name,
+        ulog.middle_name as user_middle_name, ulog.last_name as user_last_name
+      FROM audit_logs al
+      LEFT JOIN users ulog ON al.user_id = ulog.id
+      WHERE al.table_name = 'reports' AND al.record_id = ?
+      ORDER BY al.created_at DESC
+      LIMIT 50
+    `, [record.id]);
+
+    res.json({ record, history });
+  } catch (error) {
+    console.error('LEA recovery details error:', error);
+    res.status(500).json({ error: 'Failed to load recovery details' });
   }
 });
 
@@ -512,6 +577,7 @@ router.get('/cases/:caseId', async (req, res) => {
     const caseDetails = await Database.query(`
       SELECT 
         r.*,
+        d.id as device_id,
         d.brand,
         d.model,
         d.imei,
@@ -519,6 +585,7 @@ router.get('/cases/:caseId', async (req, res) => {
         d.color,
         d.device_image_url,
         d.proof_url,
+        u.id as owner_id,
         u.name as owner_name,
         u.first_name as owner_first_name,
         u.middle_name as owner_middle_name,
@@ -540,9 +607,9 @@ router.get('/cases/:caseId', async (req, res) => {
       JOIN users u ON d.user_id = u.id
       LEFT JOIN law_enforcement_agencies lea ON r.assigned_lea_id = lea.id
       LEFT JOIN users reporter ON r.reporter_id = reporter.id
-      WHERE r.case_id = ?
+      WHERE r.case_id = ? OR r.id = ?
       ${regionFilter}
-    `, [caseId, ...regionParams]);
+    `, [caseId, caseId, ...regionParams]);
 
     if (caseDetails.length === 0) {
       return res.status(404).json({ error: 'Case not found or access denied' });
@@ -596,9 +663,9 @@ router.put('/cases/:caseId/status', async (req, res) => {
       FROM reports r
       JOIN devices d ON r.device_id = d.id
       JOIN users u ON d.user_id = u.id
-      WHERE r.case_id = ?
+      WHERE r.case_id = ? OR r.id = ?
       ${regionFilter}
-    `, [caseId, ...regionParams]);
+    `, [caseId, caseId, ...regionParams]);
 
     if (caseDetails.length === 0) {
       return res.status(404).json({ error: 'Case not found or access denied' });
@@ -611,7 +678,7 @@ router.put('/cases/:caseId/status', async (req, res) => {
       status: status,
       lea_notes: notes || reportCase.lea_notes,
       updated_at: new Date()
-    }, 'case_id = ?', [caseId]);
+    }, 'id = ?', [reportCase.id]);
 
     // Log audit trail
     await Database.logAudit(
@@ -679,9 +746,9 @@ router.post('/cases/:caseId/notes', async (req, res) => {
       FROM reports r
       JOIN devices d ON r.device_id = d.id
       JOIN users u ON d.user_id = u.id
-      WHERE r.case_id = ?
+      WHERE r.case_id = ? OR r.id = ?
       ${regionFilter}
-    `, [caseId, ...regionParams]);
+    `, [caseId, caseId, ...regionParams]);
 
     if (caseDetails.length === 0) {
       return res.status(404).json({ error: 'Case not found or access denied' });
@@ -697,7 +764,7 @@ router.post('/cases/:caseId/notes', async (req, res) => {
     await Database.update('reports', {
       lea_notes: updatedNotes,
       updated_at: new Date()
-    }, 'case_id = ?', [caseId]);
+    }, 'id = ?', [reportCase.id]);
 
     // Log audit trail
     await Database.logAudit(

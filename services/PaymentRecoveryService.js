@@ -65,7 +65,9 @@ class PaymentRecoveryService {
         deviceId,
         userId,
         servicePackage,
-        paymentMethod = 'stripe'
+        paymentMethod = 'stripe',
+        paid = false,
+        paymentReference = null
       } = serviceData;
 
       // Validate device and user
@@ -111,16 +113,46 @@ class PaymentRecoveryService {
         device_id: deviceId,
         user_id: userId,
         service_package: servicePackage,
-        payment_status: 'pending',
+        payment_status: paid ? 'paid' : 'pending',
+        payment_reference: paymentReference,
         amount_paid: packageInfo.price,
         currency: packageInfo.currency,
-        status: 'payment_pending',
+        status: paid ? 'pending' : 'payment_pending',
         expires_at: expiresAt,
         created_at: new Date(),
         updated_at: new Date()
       };
 
       await Database.insert('recovery_services', recoveryService);
+
+      if (paid) {
+        // Pre-paid via invoice (device_recovery_fee) — activate immediately
+        try {
+          await this.activateRecoveryService(serviceId);
+        } catch (activationErr) {
+          console.warn('Post-payment activation error (service stays pending):', activationErr.message);
+        }
+
+        await Database.logAudit(
+          userId,
+          'RECOVERY_SERVICE_CREATED',
+          'recovery_services',
+          serviceId,
+          null,
+          { package: servicePackage, amount: packageInfo.price, paid: true },
+          null
+        );
+
+        return {
+          success: true,
+          serviceId,
+          amount: packageInfo.price,
+          currency: packageInfo.currency,
+          package: packageInfo,
+          status: 'active',
+          expiresAt
+        };
+      }
 
       // Create payment intent (mock implementation - replace with actual Stripe)
       const paymentIntent = await this.createPaymentIntent(

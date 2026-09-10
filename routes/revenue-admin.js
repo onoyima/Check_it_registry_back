@@ -22,6 +22,49 @@ const requireAdmin = async (req, res, next) => {
   }
 };
 
+// POST /create-invoice - Create a payment invoice for a fee (used by PaymentGate / fee-gated flows)
+router.post('/create-invoice', authenticateToken, async (req, res) => {
+  try {
+    const { fee_type, amount, currency, description } = req.body;
+
+    if (!fee_type || !amount || amount <= 0) {
+      return res.status(400).json({ error: 'fee_type and a positive amount are required' });
+    }
+
+    const reference = `${fee_type.toUpperCase()}-${req.user.id.slice(0, 8)}-${Date.now()}`;
+    const invoiceId = await RevenueService.createPaymentInvoice(
+      req.user.id,
+      amount,
+      fee_type,
+      reference,
+      { fee_type, amount, currency: currency || 'NGN', description: description || '' }
+    );
+
+    await Database.logAudit(
+      req.user.id,
+      'INVOICE_CREATED',
+      'payment_invoices',
+      invoiceId,
+      null,
+      { fee_type, amount, reference },
+      req.ip
+    );
+
+    res.status(201).json({
+      success: true,
+      invoice_id: invoiceId,
+      reference,
+      amount,
+      currency: currency || 'NGN',
+      purpose: fee_type,
+      status: 'pending'
+    });
+  } catch (error) {
+    console.error('Create invoice error:', error);
+    res.status(500).json({ error: 'Failed to create invoice' });
+  }
+});
+
 router.get('/fees', requireAdmin, async (req, res) => {
   try {
     const fees = await RevenueService.getAllFees();
