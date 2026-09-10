@@ -752,12 +752,14 @@ const MIGRATIONS = [
       const result = await db.query(
         `UPDATE users SET
            email_hash = COALESCE(email_hash, SHA2(LOWER(TRIM(email)), 256))
-         WHERE email_hash IS NULL AND email IS NOT NULL AND email <> ''`
+         WHERE email_hash IS NULL AND email IS NOT NULL AND email <> ''
+           AND email NOT REGEXP '^[0-9a-f]{32}:[0-9a-f]+$'`
       );
       await db.query(
         `UPDATE users SET
            phone_hash = COALESCE(phone_hash, SHA2(TRIM(phone), 256))
-         WHERE phone_hash IS NULL AND phone IS NOT NULL AND phone <> ''`
+         WHERE phone_hash IS NULL AND phone IS NOT NULL AND phone <> ''
+           AND phone NOT REGEXP '^[0-9a-f]{32}:[0-9a-f]+$'`
       );
       console.log(`  ✓ hash backfill complete (${JSON.stringify(result[0])})`);
     },
@@ -808,6 +810,52 @@ const MIGRATIONS = [
            AND original_email NOT REGEXP '^[0-9a-f]{32}:[0-9a-f]+$'`
       );
       console.log(`  ✓ original_email hash backfill complete (${JSON.stringify(result[0])})`);
+    },
+  },
+  {
+    // Repair for live databases that ran 019_pii_lookup_hash_columns AFTER
+    // users.email was already encrypted: its plaintext backfill then hashed the
+    // ciphertext blob, so `users.email_hash` no longer equals
+    // sha256(<real plaintext email>) and the exact-match login lookup never
+    // hits — existing accounts fail with "Invalid email or password" even with
+    // the right credentials.
+    //
+    // Database.query() decrypts email/phone at the read boundary, so rows below
+    // carry readable values; this recomputes both lookup hashes from them and
+    // writes only where they differ. Idempotent (correct rows are skipped), and
+    // because the migration is recorded only after the seed completes, a partial
+    // run is re-attempted on the next boot.
+    name: '021_repair_pii_lookup_hashes',
+    sql: [],
+    seed: async () => {
+      const PIIEncryptionService = require('./PIIEncryptionService');
+      const rows = await db.query(
+        'SELECT id, email, phone, email_hash, phone_hash FROM users WHERE (email IS NOT NULL AND email <> \'\') OR (phone IS NOT NULL AND phone <> \'\')'
+      );
+      let fixed = 0;
+      for (const row of rows) {
+        const sets = [];
+        const params = [];
+        if (row.email && typeof row.email === 'string') {
+          const expected = PIIEncryptionService.hashEmail(row.email);
+          if (row.email_hash !== expected) {
+            sets.push('email_hash = ?');
+            params.push(expected);
+          }
+        }
+        if (row.phone && typeof row.phone === 'string') {
+          const expected = PIIEncryptionService.hashPhone(row.phone);
+          if (row.phone_hash !== expected) {
+            sets.push('phone_hash = ?');
+            params.push(expected);
+          }
+        }
+        if (sets.length === 0) continue;
+        params.push(row.id);
+        await db.query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
+        fixed++;
+      }
+      console.log(`  ✓ PII lookup-hash repair complete (${fixed} user(s) fixed)`);
     },
   },
 ];

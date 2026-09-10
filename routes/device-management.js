@@ -117,6 +117,51 @@ router.delete('/categories/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/device-management/verifications - List device verification status for current user
+router.get('/verifications', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const verifications = await Database.query(`
+      SELECT
+        d.id AS device_id,
+        d.status,
+        d.verified_at,
+        d.created_at,
+        d.brand,
+        d.model,
+        d.imei,
+        d.serial,
+        u.name AS verified_by_name,
+        u.first_name AS verified_by_first_name,
+        u.last_name AS verified_by_last_name
+      FROM devices d
+      LEFT JOIN users u ON d.verified_by = u.id
+      WHERE d.user_id = ?
+      ORDER BY d.created_at DESC
+    `, [userId]);
+
+    const freed = verifications.map(v => ({
+      id: String(v.device_id),
+      device_id: v.device_id,
+      method: v.verified_at ? 'admin' : 'pending',
+      status: v.status === 'verified' ? 'verified' : v.status === 'unverified' ? 'pending' : (v.status || 'pending'),
+      created_at: v.created_at,
+      verified_at: v.verified_at,
+      device: {
+        brand: v.brand,
+        model: v.model,
+        imei: v.imei,
+        serial: v.serial
+      }
+    }));
+
+    res.json({ data: freed });
+  } catch (error) {
+    console.error('Error fetching verification status:', error);
+    res.status(500).json({ error: 'Failed to fetch verification status' });
+  }
+});
+
 // GET /api/device-management - List user's devices
 router.get("/", authenticateToken, async (req, res) => {
   try {

@@ -91,11 +91,18 @@ class PIIEncryptionService {
       { field: 'business_phone', hashField: null },
     ];
     for (const spec of specs) {
+      const present = Object.prototype.hasOwnProperty.call(out, spec.field);
       const value = out[spec.field];
       if (typeof value === 'string' && value.length > 0 && !this.isEncrypted(value)) {
         if (spec.hashField) out[spec.hashField] = this[spec.hashFn](value);
         if (shouldEncrypt) out[spec.field] = this.encrypt(value);
-      } else if (value == null && spec.hashField && spec.hashField in out === false) {
+      } else if (spec.hashField && present && (value == null || value === '')) {
+        // Field explicitly cleared -> drop the identity hash so lookups by that
+        // contact stop matching. This runs ONLY when the key is present in the
+        // payload. A partial UPDATE that simply omits email/phone (login stats,
+        // password change, session refresh) must never erase the existing
+        // lookup hash, or the account is silently locked out on its next login
+        // (email_hash IS NULL -> exact-match lookup misses -> 401).
         out[spec.hashField] = null;
       }
     }
