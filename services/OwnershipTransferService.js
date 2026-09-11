@@ -1094,6 +1094,50 @@ class OwnershipTransferService {
     }
   }
 
+  // Resend seller transfer verification OTP email
+  async resendSellerOTP(transferId, fromUserId) {
+    try {
+      const transfer = await Database.selectOne(
+        'ownership_transfers',
+        '*',
+        'id = ?',
+        [transferId]
+      );
+
+      if (!transfer) {
+        return { success: false, error: 'Transfer not found' };
+      }
+
+      if (transfer.from_user_id !== fromUserId) {
+        return { success: false, error: 'Unauthorized to resend code' };
+      }
+
+      if (transfer.status !== 'initiated') {
+        return { success: false, error: 'Transfer not in initiated state' };
+      }
+
+      const otpResult = await this.sendTransferOTP(fromUserId, transferId);
+      if (!otpResult.success) {
+        return { success: false, error: otpResult.error || 'Failed to resend verification code' };
+      }
+
+      await Database.logAudit(
+        fromUserId,
+        'TRANSFER_OTP_RESENT',
+        'ownership_transfers',
+        transferId,
+        null,
+        null,
+        null
+      );
+
+      return { success: true, message: 'Verification code resent to your email' };
+    } catch (error) {
+      console.error('Resend seller OTP error:', error);
+      throw error;
+    }
+  }
+
   generateTransferCompletionEmail(transfer, device, seller, buyer, recipient) {
     const isSeller = recipient === 'seller';
     const otherParty = isSeller ? buyer : seller;

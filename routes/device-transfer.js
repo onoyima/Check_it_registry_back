@@ -1028,6 +1028,29 @@ router.post('/resend-code', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/device-transfer/resend-seller-otp - Resend seller verification OTP (seller only)
+router.post('/resend-seller-otp', authenticateToken, async (req, res) => {
+  try {
+    const { transferId } = req.body;
+
+    if (!transferId) {
+      return res.status(400).json({ error: 'Transfer ID is required' });
+    }
+
+    const result = await OwnershipTransferService.resendSellerOTP(transferId, req.user.id);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error || 'Failed to resend verification code' });
+    }
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Resend seller OTP error:', error);
+    res.status(500).json({ error: 'Failed to resend verification code' });
+  }
+});
+
 // GET /api/device-transfer/my-transfers - Get user's transfers
 router.get('/my-transfers', authenticateToken, async (req, res) => {
   try {
