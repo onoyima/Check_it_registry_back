@@ -53,6 +53,10 @@ class EnhancedNotificationService {
         subject,
         html: htmlContent,
       });
+      if (result && result.error) {
+        console.error(`❌ Enhanced email send REJECTED to ${to}:`, JSON.stringify(result.error));
+        throw new Error(`Email rejected: ${result.error.message || 'Unknown Resend error'}`);
+      }
       console.log('📧 Email sent successfully to:', to);
       return { success: true, id: result.id };
     } catch (error) {

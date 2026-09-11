@@ -362,13 +362,8 @@ router.post('/login', async (req, res) => {
       const deviceInfo = DeviceSecurityService.parseUserAgent(req.get('User-Agent'));
 
       // Create OTP for device verification. The OTP email now ALSO carries the
-      // device/security details — a single combined email, not two. The failure
-      // is wrapped so email/DB issues don't block the login response.
-      try {
-        await OTPService.createOTP(user.id, 'device_login', deviceFingerprint, 10, { deviceInfo, ipAddress: req.ip }); // 10 minutes
-      } catch (otpError) {
-        console.error('OTP creation failed (continuing login):', otpError.message);
-      }
+      // device/security details — a single combined email, not two.
+      await OTPService.createOTP(user.id, 'device_login', deviceFingerprint, 10, { deviceInfo, ipAddress: req.ip }); // 10 minutes
 
       // Create temporary session (not trusted yet)
       let sessionInfo;
@@ -444,7 +439,14 @@ router.post('/login', async (req, res) => {
     });
   } catch (error) {
     console.error('Login error:', error);
-    
+
+    if (error.message && error.message.includes('Email rejected')) {
+      return res.status(503).json({
+        error: 'We could not send your login verification code right now. Please try again shortly.',
+        requires_device_verification: true
+      });
+    }
+
     // Check if it's a database connection error
     if (error.message.includes('Database connection not available')) {
       return res.status(503).json({ 

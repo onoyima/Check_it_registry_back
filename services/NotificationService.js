@@ -137,6 +137,10 @@ class NotificationService {
         subject: notification.subject,
         html: this.generateEmailHTML(notification.message, notification.payload),
       });
+      if (result && result.error) {
+        console.error(`❌ Email send REJECTED to ${notification.recipient}:`, JSON.stringify(result.error));
+        throw new Error(`Email rejected: ${result.error.message || 'Unknown Resend error'}`);
+      }
       console.log("✅ Email sent successfully to:", notification.recipient);
       return true;
     } catch (error) {
@@ -163,6 +167,10 @@ class NotificationService {
         subject,
         html: htmlContent,
       });
+      if (result && result.error) {
+        console.error(`❌ Direct email send REJECTED to ${to}:`, JSON.stringify(result.error));
+        throw new Error(`Email rejected: ${result.error.message || 'Unknown Resend error'}`);
+      }
       console.log("✅ Direct email sent successfully to:", to);
       return true;
     } catch (error) {
