@@ -225,6 +225,24 @@ class EmailVerificationService {
           };
         }
 
+        // Throttle duplicate sends: a user who registers and then immediately
+        // retries login (the 403 path also calls this) would otherwise receive
+        // the same verification email twice. Skip if a link was issued recently.
+        const [recentRows] = await connection.execute(
+          'SELECT created_at FROM email_verification_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+          [user.id]
+        );
+        if (recentRows.length > 0) {
+          const ageMs = Date.now() - new Date(recentRows[0].created_at).getTime();
+          const windowMs = parseInt(process.env.VERIFICATION_RESEND_WINDOW_MS) || 2 * 60 * 1000;
+          if (ageMs < windowMs) {
+            return {
+              success: true,
+              message: 'A verification email was sent recently. Please check your inbox and spam folder.'
+            };
+          }
+        }
+
         // Create new verification
         return await this.createEmailVerification(user.id);
 

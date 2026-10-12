@@ -343,7 +343,7 @@ router.post('/login', async (req, res) => {
       );
 
       return res.status(403).json({
-        error: 'Please verify your email address before logging in. A fresh verification link has been sent to your email.',
+        error: 'Please verify your email address before logging in. Check your inbox and spam folder for the verification link.',
         needs_verification: true,
         email: user.email,
         user_id: user.id
@@ -582,7 +582,7 @@ router.post('/verify-email', async (req, res) => {
 });
 
 // POST /api/auth/resend-verification - Resend verification email
-router.post('/resend-verification', async (req, res) => {
+router.post('/resend-verification', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
 
