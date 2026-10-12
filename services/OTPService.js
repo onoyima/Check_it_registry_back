@@ -44,14 +44,15 @@ class OTPService {
       );
 
       // Generate new OTP
+      const otpId = Database.generateUUID();
       const otpCode = this.generateOTP();
       const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
 
       // Insert new OTP
-      const [result] = await connection.execute(
-        `INSERT INTO otps (user_id, otp_code, otp_type, reference_id, expires_at) 
-         VALUES (?, ?, ?, ?, ?)`,
-        [userId, otpCode, otpType, referenceId, expiresAt]
+      await connection.execute(
+        `INSERT INTO otps (id, user_id, otp_code, otp_type, reference_id, expires_at) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [otpId, userId, otpCode, otpType, referenceId, expiresAt]
       );
 
       try {
@@ -73,13 +74,13 @@ class OTPService {
       } catch (error) {
         // Delivery failed (or user not found) — delete the OTP so an
         // undelivered code can never be used
-        await connection.execute('DELETE FROM otps WHERE id = ?', [result.insertId]);
+        await connection.execute('DELETE FROM otps WHERE id = ?', [otpId]);
         throw error;
       }
 
       return {
         success: true,
-        otpId: result.insertId,
+        otpId,
         expiresAt,
         message: 'OTP sent successfully'
       };

@@ -858,6 +858,56 @@ const MIGRATIONS = [
       console.log(`  ✓ PII lookup-hash repair complete (${fixed} user(s) fixed)`);
     },
   },
+  {
+    // Some live databases created `otps` without a default on `id`, kept
+    // `otp_type` as a narrow ENUM, and left `expires_at` with an unintended
+    // ON UPDATE CURRENT_TIMESTAMP. Consequences: every OTP insert failed with
+    // errno 1364 ("Field 'id' doesn't have a default value"), app-generated
+    // types like `account_deletion` and `report_device_email` were rejected by
+    // the ENUM, and a single failed OTP attempt reset `expires_at` to now and
+    // killed the code. This normalises the table to what the code expects.
+    // Idempotent: each ALTER only runs when the current definition is wrong.
+    name: '022_repair_otps_table',
+    sql: [
+      `CREATE TABLE IF NOT EXISTS otps (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        otp_code VARCHAR(10) NOT NULL,
+        otp_type VARCHAR(50) NOT NULL,
+        reference_id VARCHAR(128) DEFAULT NULL,
+        expires_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        used_at TIMESTAMP NULL DEFAULT NULL,
+        attempts INT DEFAULT 0,
+        max_attempts INT DEFAULT 3,
+        KEY idx_user_id (user_id),
+        KEY idx_otp_code (otp_code),
+        KEY idx_expires_at (expires_at),
+        KEY idx_otp_type (otp_type)
+      )`,
+    ],
+    seed: async () => {
+      const cols = await db.query('SHOW COLUMNS FROM otps');
+      const byName = {};
+      for (const c of cols) byName[c.Field] = c;
+
+      if (byName.id && byName.id.Default === null) {
+        try {
+          await db.query('ALTER TABLE otps MODIFY COLUMN id VARCHAR(36) NOT NULL DEFAULT (UUID())');
+        } catch (e) {
+          await db.query('ALTER TABLE otps MODIFY COLUMN id VARCHAR(36) NOT NULL DEFAULT uuid()').catch(() => {});
+        }
+      }
+
+      if (byName.otp_type && /^enum/i.test(byName.otp_type.Type || '')) {
+        await db.query('ALTER TABLE otps MODIFY COLUMN otp_type VARCHAR(50) NOT NULL').catch(() => {});
+      }
+
+      if (byName.expires_at && /on update/i.test(byName.expires_at.Extra || '')) {
+        await db.query('ALTER TABLE otps MODIFY COLUMN expires_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP').catch(() => {});
+      }
+    },
+  },
 ];
 
 async function runMigrations() {

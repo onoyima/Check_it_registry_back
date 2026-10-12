@@ -1099,7 +1099,7 @@ CREATE TABLE `marketplace_messages` (
 
 LOCK TABLES `marketplace_messages` WRITE;
 /*!40000 ALTER TABLE `marketplace_messages` DISABLE KEYS */;
-INSERT INTO `marketplace_messages` VALUES ('15d6c875-4b1d-4896-9a77-fe82829465a6','c3121422-eb77-4b0f-b331-6e3ac0e2b874','a69fb594-053f-4aef-9112-16ff38220a91','d845eb6e-8d96-4e4f-a6f2-7f00575ec1f9','Yes it is! I can offer free delivery within Ibadan.','2026-06-24 10:46:07',NULL),('1a4c50b1-76ba-4366-805a-23d88a6d962c','2813de54-0f59-46f7-b557-8f99b4081d9b','ae69a974-d7f8-4005-8ebd-08304989e507','81cb0d4c-2702-4b62-97ce-898acf805cc3','Can you do Ôéª1,700,000 if I pick it up today?','2026-06-23 03:46:07',NULL),('2ef48b98-4057-4fcb-9908-7f2eaefe8112','c3121422-eb77-4b0f-b331-6e3ac0e2b874','d845eb6e-8d96-4e4f-a6f2-7f00575ec1f9','a69fb594-053f-4aef-9112-16ff38220a91','Hi, I am interested in the iPad Pro. Is it still available?','2026-06-23 21:46:07',NULL),('3dcf1f4c-78cb-45a1-978a-a32941888848','2813de54-0f59-46f7-b557-8f99b4081d9b','ae69a974-d7f8-4005-8ebd-08304989e507','81cb0d4c-2702-4b62-97ce-898acf805cc3','Hello, is the iPhone 15 Pro Max still available?','2026-06-23 03:46:07',NULL),('5a809948-114c-4c73-b647-6f32f9ef79ac','2813de54-0f59-46f7-b557-8f99b4081d9b','81cb0d4c-2702-4b62-97ce-898acf805cc3','ae69a974-d7f8-4005-8ebd-08304989e507','Yes, it is still available. Would you like to negotiate the price?','2026-06-24 14:46:07',NULL),('762e29f4-a408-488b-a7ba-b4ba8bd02e39','2813de54-0f59-46f7-b557-8f99b4081d9b','81cb0d4c-2702-4b62-97ce-898acf805cc3','ae69a974-d7f8-4005-8ebd-08304989e507','Best I can do is Ôéª1,800,000 since it is brand new. I can deliver within Lagos.','2026-06-22 20:46:07',NULL);
+INSERT INTO `marketplace_messages` VALUES ('15d6c875-4b1d-4896-9a77-fe82829465a6','c3121422-eb77-4b0f-b331-6e3ac0e2b874','a69fb594-053f-4aef-9112-16ff38220a91','d845eb6e-8d96-4e4f-a6f2-7f00575ec1f9','Yes it is! I can offer free delivery within Ibadan.','2026-06-24 10:46:07',NULL),('1a4c50b1-76ba-4366-805a-23d88a6d962c','2813de54-0f59-46f7-b557-8f99b4081d9b','ae69a974-d7f8-4005-8ebd-08304989e507','81cb0d4c-2702-4b62-97ce-898acf805cc3','Can you do ï¿½ï¿½1,700,000 if I pick it up today?','2026-06-23 03:46:07',NULL),('2ef48b98-4057-4fcb-9908-7f2eaefe8112','c3121422-eb77-4b0f-b331-6e3ac0e2b874','d845eb6e-8d96-4e4f-a6f2-7f00575ec1f9','a69fb594-053f-4aef-9112-16ff38220a91','Hi, I am interested in the iPad Pro. Is it still available?','2026-06-23 21:46:07',NULL),('3dcf1f4c-78cb-45a1-978a-a32941888848','2813de54-0f59-46f7-b557-8f99b4081d9b','ae69a974-d7f8-4005-8ebd-08304989e507','81cb0d4c-2702-4b62-97ce-898acf805cc3','Hello, is the iPhone 15 Pro Max still available?','2026-06-23 03:46:07',NULL),('5a809948-114c-4c73-b647-6f32f9ef79ac','2813de54-0f59-46f7-b557-8f99b4081d9b','81cb0d4c-2702-4b62-97ce-898acf805cc3','ae69a974-d7f8-4005-8ebd-08304989e507','Yes, it is still available. Would you like to negotiate the price?','2026-06-24 14:46:07',NULL),('762e29f4-a408-488b-a7ba-b4ba8bd02e39','2813de54-0f59-46f7-b557-8f99b4081d9b','81cb0d4c-2702-4b62-97ce-898acf805cc3','ae69a974-d7f8-4005-8ebd-08304989e507','Best I can do is ï¿½ï¿½1,800,000 since it is brand new. I can deliver within Lagos.','2026-06-22 20:46:07',NULL);
 /*!40000 ALTER TABLE `marketplace_messages` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -1278,9 +1278,9 @@ CREATE TABLE `otps` (
   `id` varchar(36) NOT NULL DEFAULT uuid(),
   `user_id` varchar(36) NOT NULL,
   `otp_code` varchar(10) NOT NULL,
-  `otp_type` enum('email_verification','device_transfer','password_reset','2fa','device_login','device_verification') NOT NULL,
+  `otp_type` varchar(50) NOT NULL,
   `reference_id` varchar(128) DEFAULT NULL COMMENT 'Reference to related record (transfer_id, device_fingerprint, etc.)',
-  `expires_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `expires_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `used_at` timestamp NULL DEFAULT NULL,
   `attempts` int(11) DEFAULT 0,

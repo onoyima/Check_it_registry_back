@@ -364,7 +364,7 @@ CREATE TABLE otps (
     id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id VARCHAR(36) NOT NULL,
     otp_code VARCHAR(10) NOT NULL,
-    otp_type ENUM('email_verification', 'device_transfer', 'password_reset', '2fa', 'device_login', 'device_verification') NOT NULL,
+    otp_type VARCHAR(50) NOT NULL,
     reference_id VARCHAR(128) NULL COMMENT 'Reference to related record (transfer_id, device_fingerprint, etc.)',
     expires_at TIMESTAMP NOT NULL,
     used_at TIMESTAMP NULL,

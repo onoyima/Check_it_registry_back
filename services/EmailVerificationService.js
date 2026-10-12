@@ -62,9 +62,9 @@ class EmailVerificationService {
           ).catch(() => {});
 
           await connection.execute(
-            `INSERT INTO email_verification_tokens (user_id, token, expires_at) 
-             VALUES (?, ?, ?)`,
-            [userId, randomToken, expiresAt]
+            `INSERT INTO email_verification_tokens (id, user_id, token, expires_at) 
+             VALUES (?, ?, ?, ?)`,
+            [Database.generateUUID(), userId, randomToken, expiresAt]
           );
           dbSuccess = true;
         } catch (insertErr) {

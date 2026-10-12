@@ -2,9 +2,11 @@
 -- 1) Add missing otp_type values: device_login, device_verification
 -- 2) Widen reference_id to store SHA-256 device fingerprints (64 chars)
 
--- Modify ENUM to include new types
+-- Convert ENUM to VARCHAR so any OTP type is accepted (device_login,
+-- device_verification, account_deletion, reauthentication, and the
+-- dynamically generated `<action>_email` / `<action>_sms` types)
 ALTER TABLE otps 
-  MODIFY COLUMN otp_type ENUM('email_verification', 'device_transfer', 'password_reset', '2fa', 'device_login', 'device_verification') NOT NULL;
+  MODIFY COLUMN otp_type VARCHAR(50) NOT NULL;
 
 -- Widen reference_id column to avoid truncation of device fingerprint
 ALTER TABLE otps 
