@@ -81,16 +81,27 @@ class DeviceCheckService {
       }
 
       // Perform security analysis
-      const securityAnalysis = await this.performSecurityAnalysis({
-        device,
-        checkerLocation,
-        deviceFingerprint,
-        networkInfo,
-        checkerUserId
-      });
+      // Risk scoring is extra information: if it fails, the check still answers
+      let securityAnalysis = { riskScore: 0, riskFactors: [] };
+      try {
+        securityAnalysis = await this.performSecurityAnalysis({
+          device,
+          checkerLocation,
+          deviceFingerprint,
+          networkInfo,
+          checkerUserId
+        });
+      } catch (e) {
+        console.error('Device check: risk analysis skipped:', e.message);
+      }
 
       // Generate warnings based on ownership and security analysis
-      const warnings = this.generateSecurityWarnings(device, checkerUserId, securityAnalysis);
+      let warnings = { ownership: null, security: [] };
+      try {
+        warnings = this.generateSecurityWarnings(device, checkerUserId, securityAnalysis);
+      } catch (e) {
+        console.error('Device check: warnings skipped:', e.message);
+      }
 
       // Log the device check
       const checkLogId = await this.logDeviceCheck({

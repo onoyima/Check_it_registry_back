@@ -326,11 +326,12 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
 
     /* Device check fee logic for authenticated users */
     if (checkerUserId) {
-      const fraudCheck = await FraudDetectionService.checkAndFlag(checkerUserId, 'DEVICE_CHECK', {
+      // Fraud scoring must never stop a genuine check from answering
+      await FraudDetectionService.checkAndFlag(checkerUserId, 'DEVICE_CHECK', {
         ipAddress: networkInfo?.ip || ipValue,
         macAddress: macValue,
         deviceId: null
-      });
+      }).catch((e) => console.error('Device check: fraud scoring skipped:', e.message));
 
       const onFreeTier = await RevenueService.deductFreeCheckCredit(checkerUserId);
       if (!onFreeTier) {
@@ -490,11 +491,14 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Enhanced device check error:', error);
+    try { require('../services/ErrorStore').capture(error, req); } catch (_) { /* ignore */ }
     // Bad input (missing location etc.) is the checker's to fix, so say what it is
     if (error.status === 400 || /^(Missing required field|Invalid location data|Invalid GPS coordinates)/.test(error.message || '')) {
       return res.status(400).json({ error: error.message === 'Invalid location data' ? 'We could not read your location. Turn on location and try again.' : error.message });
     }
     res.status(500).json({ 
+      // Outside production, say what went wrong so it can be fixed quickly
+      ...(process.env.NODE_ENV !== 'production' ? { detail: error.message } : {}),
       error: 'Failed to perform device check' 
     });
   }
