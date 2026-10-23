@@ -76,13 +76,20 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Issue a login token carrying the user's current token_version.
-async function issueLoginToken(user) {
+// "Remember me" keeps people signed in longer (30 days; 7 for admin and
+// police). Signing out, or changing the password, still ends it at once
+// because the token_version changes.
+const PRIVILEGED = ['admin', 'super_admin', 'lea'];
+async function issueLoginToken(user, { remember = false } = {}) {
   let tv = 0;
   try {
     const row = await Database.selectOne('users', 'token_version', 'id = ?', [user.id]);
     tv = (row && row.token_version) || 0;
   } catch (_) { /* column not migrated yet */ }
-  return Database.generateJWT({ id: user.id, email: user.email, role: user.role, tv });
+  const days = PRIVILEGED.includes(user.role)
+    ? parseInt(process.env.ADMIN_REMEMBER_DAYS || '7', 10)
+    : parseInt(process.env.REMEMBER_ME_DAYS || '30', 10);
+  return Database.generateJWT({ id: user.id, email: user.email, role: user.role, tv }, remember ? `${days}d` : '24h');
 }
 
 // Invalidate every login token the user currently holds.

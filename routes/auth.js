@@ -341,16 +341,19 @@ router.post('/login', async (req, res) => {
     }
 
     // Check device trust status
-    // Admin and police accounts always need the emailed code (two-factor
-    // sign-in on every login); other users only on a new browser.
+    // Everyone needs the emailed code on a browser we don't know. A browser
+    // they chose to remember skips it: for 30 days, or 7 days for admin and
+    // police accounts (they always need the code when OTP is switched off
+    // for everyone else).
     const privileged = ['admin', 'super_admin', 'lea'].includes(user.role);
     const enableOtp = privileged || process.env.ENABLE_EMAIL_OTP !== 'false';
     const deviceFingerprint = DeviceSecurityService.generateDeviceFingerprint(req);
-    
+    const trustDays = privileged ? parseInt(process.env.ADMIN_TRUSTED_DEVICE_DAYS || '7', 10) : undefined;
+
     // Only check trust if OTP is enabled
-    const isDeviceTrusted = privileged
-      ? false
-      : (enableOtp ? await DeviceSecurityService.isDeviceTrusted(user.id, deviceFingerprint) : true);
+    const isDeviceTrusted = enableOtp
+      ? await DeviceSecurityService.isRequestDeviceTrusted(user.id, req, trustDays)
+      : true;
     
     // If device is not trusted and OTP is enabled, require OTP verification
     if (!isDeviceTrusted && enableOtp) {
@@ -392,8 +395,9 @@ router.post('/login', async (req, res) => {
       [user.id]
     );
 
-    // Generate JWT
-    const token = await issueLoginToken(user);
+    // Generate JWT ("Remember me" keeps them signed in longer)
+    // A remembered browser was a "remember me" choice too
+    const token = await issueLoginToken(user, { remember: !!remember_device || (enableOtp && isDeviceTrusted) });
 
     // Log successful login
     await Database.insert('audit_logs', {
@@ -837,13 +841,17 @@ router.post('/verify-device', otpLimiter, async (req, res) => {
     // Trust the device by default after successful OTP (skip prompts within 90 days)
     // If client explicitly sets remember_device === false, skip trusting.
     const shouldTrust = remember_device !== false;
+    // Admin and police browsers are remembered for 7 days from now at most
+    const trustDays = ['admin', 'super_admin', 'lea'].includes(user.role)
+      ? parseInt(process.env.ADMIN_TRUSTED_DEVICE_DAYS || '7', 10) : undefined;
     let trusted = false;
     if (shouldTrust) {
-      trusted = await DeviceSecurityService.trustDevice(user_id, device_fingerprint);
+      trusted = await DeviceSecurityService.trustDevice(user_id, device_fingerprint, trustDays);
       // In case session was not created earlier, create and trust now
       if (!trusted) {
         try {
           await DeviceSecurityService.createDeviceSession(user_id, req, true);
+          await DeviceSecurityService.trustDevice(user_id, device_fingerprint, trustDays);
           trusted = true;
         } catch (sessionErr) {
           console.warn('Device session creation during verify failed:', sessionErr);
@@ -868,8 +876,8 @@ router.post('/verify-device', otpLimiter, async (req, res) => {
       [user_id]
     );
 
-    // Generate JWT
-    const token = await issueLoginToken(user);
+    // Generate JWT ("Remember me" keeps them signed in longer)
+    const token = await issueLoginToken(user, { remember: shouldTrust });
 
     // Log successful device verification
     await Database.insert('audit_logs', {

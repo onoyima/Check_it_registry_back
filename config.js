@@ -237,11 +237,11 @@ class Database {
   }
 
   // JWT utilities — supports secret rotation via JWT_SECRET_PREVIOUS
-  static generateJWT(payload) {
+  static generateJWT(payload, expiresIn = '24h') {
     const jwt = require('jsonwebtoken');
     const secret = process.env.JWT_SECRET;
     if (!secret) throw new Error('JWT_SECRET is not configured');
-    return jwt.sign(payload, secret, { expiresIn: '24h', algorithm: 'HS256' });
+    return jwt.sign(payload, secret, { expiresIn, algorithm: 'HS256' });
   }
 
   // Short-lived, single-purpose token (MFA confirmation etc.). Always carries

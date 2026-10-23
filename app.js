@@ -118,6 +118,7 @@ app.use(cors({
   allowedHeaders: [
     'Content-Type',
     'Authorization',
+    'X-Device-Id',
     'X-Forwarded-For',
     'x-mac-address',
     'x-client-mac',

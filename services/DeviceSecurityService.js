@@ -7,8 +7,19 @@ const OTPService = require('./OTPService');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 class DeviceSecurityService {
-  // Generate device fingerprint from request headers and IP
+  // Which browser this is. The app keeps a random id in the browser and
+  // sends it as X-Device-Id, so the browser stays recognised after it
+  // updates itself. Requests without it fall back to the old header hash.
   generateDeviceFingerprint(req) {
+    const id = String(req.get('X-Device-Id') || '');
+    if (/^[A-Za-z0-9_-]{16,64}$/.test(id)) {
+      return crypto.createHash('sha256').update(`device:${id}`).digest('hex');
+    }
+    return this.legacyFingerprint(req);
+  }
+
+  // The old way: a hash of the browser's headers (changes on every update)
+  legacyFingerprint(req) {
     const userAgent = req.get('User-Agent') || '';
     const acceptLanguage = req.get('Accept-Language') || '';
     const acceptEncoding = req.get('Accept-Encoding') || '';
@@ -21,28 +32,42 @@ class DeviceSecurityService {
     return crypto.createHash('sha256').update(fingerprintData).digest('hex');
   }
 
+  // Trusted, by the new id or (once, for browsers remembered before the
+  // change) by the old header hash, which is then moved to the new id.
+  async isRequestDeviceTrusted(userId, req, maxDays) {
+    const fp = this.generateDeviceFingerprint(req);
+    if (await this.isDeviceTrusted(userId, fp, maxDays)) return true;
+    const legacy = this.legacyFingerprint(req);
+    if (legacy !== fp && await this.isDeviceTrusted(userId, legacy, maxDays)) {
+      try {
+        await Database.query('UPDATE user_sessions SET device_fingerprint = ? WHERE user_id = ? AND device_fingerprint = ? AND is_trusted = 1 AND is_active = 1', [fp, userId, legacy]);
+      } catch (e) { console.warn('Could not move remembered device to new id:', e.message); }
+      return true;
+    }
+    return false;
+  }
+
   // Check if device is trusted for the user
-  async isDeviceTrusted(userId, deviceFingerprint) {
+  async isDeviceTrusted(userId, deviceFingerprint, maxDays) {
     try {
-      const trustedDevice = await Database.selectOne(
-        'user_sessions',
-        'id, is_trusted, last_activity, expires_at',
-        'user_id = ? AND device_fingerprint = ? AND is_trusted = ? AND is_active = ?',
-        [userId, deviceFingerprint, true, true]
+      const trustDays = maxDays || parseInt(process.env.TRUSTED_DEVICE_DAYS || '30');
+      // The database compares the dates itself, so the server's and the
+      // database's time zones can't disagree about whether it has expired.
+      const trustedDevice = await Database.queryOne(
+        `SELECT id, (expires_at IS NOT NULL AND expires_at < NOW()) AS expired,
+                (last_activity < DATE_SUB(NOW(), INTERVAL ? DAY)) AS stale
+         FROM user_sessions
+         WHERE user_id = ? AND device_fingerprint = ? AND is_trusted = 1 AND is_active = 1
+         ORDER BY last_activity DESC LIMIT 1`,
+        [trustDays, userId, deviceFingerprint]
       );
 
       if (!trustedDevice) {
         return false;
       }
 
-      // Check expiry and activity against a 90-day trust window
-      const now = new Date();
-      const lastActivity = new Date(trustedDevice.last_activity);
-      const trustDays = parseInt(process.env.TRUSTED_DEVICE_DAYS || '30');
-      const cutoffDate = new Date(Date.now() - trustDays * 24 * 60 * 60 * 1000);
-
-      const expired = trustedDevice.expires_at && new Date(trustedDevice.expires_at) < now;
-      const inactiveTooLong = lastActivity < cutoffDate;
+      const expired = !!Number(trustedDevice.expired);
+      const inactiveTooLong = !!Number(trustedDevice.stale);
 
       if (expired || inactiveTooLong) {
         // Mark as inactive if expired or too old
@@ -118,18 +143,20 @@ class DeviceSecurityService {
   }
 
   // Trust a device after OTP verification
-  async trustDevice(userId, deviceFingerprint) {
+  async trustDevice(userId, deviceFingerprint, days) {
     try {
-      await Database.update(
+      const result = await Database.update(
         'user_sessions',
         { 
           is_trusted: true, 
           updated_at: new Date(),
-          expires_at: new Date(Date.now() + parseInt(process.env.TRUSTED_DEVICE_DAYS || '30') * 24 * 60 * 60 * 1000) // Configurable trust window
+          expires_at: new Date(Date.now() + (days || parseInt(process.env.TRUSTED_DEVICE_DAYS || '30')) * 24 * 60 * 60 * 1000) // Configurable trust window
         },
         'user_id = ? AND device_fingerprint = ? AND is_active = ?',
         [userId, deviceFingerprint, true]
       );
+      // No session row for this browser: let the caller create one
+      if (result && result.affectedRows === 0) return false;
 
       // Log device trust event
       await Database.insert('audit_logs', {
