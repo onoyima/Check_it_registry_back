@@ -46,6 +46,25 @@ router.post('/paystack', express.raw({ type: '*/*', limit: '1mb' }), async (req,
   }
 });
 
+// POST /api/payments/webhook/monnify and /flutterwave - marketplace escrow
+// providers. Each checks its own signature, then completes the sale the same
+// way as Paystack does.
+for (const name of ['monnify', 'flutterwave']) {
+  router.post(`/${name}`, express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
+    const provider = require('../services/escrow').get(name);
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
+    let parsed;
+    try { parsed = provider.parseWebhook(rawBody, req.headers); } catch (e) { return res.status(400).json({ error: 'Invalid payload' }); }
+    if (!parsed || !parsed.valid) return res.status(400).json({ error: 'Invalid signature' });
+    res.sendStatus(200);
+    try {
+      if (parsed.paid && parsed.reference) await handlePaymentSuccess(parsed.reference, parsed.amount, parsed.currency || 'NGN');
+    } catch (error) {
+      console.error(`${name} webhook processing error:`, error);
+    }
+  });
+}
+
 async function handlePaymentSuccess(reference, amountPaid, currency) {
   if (!reference) return;
 

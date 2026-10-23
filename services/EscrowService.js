@@ -7,7 +7,7 @@ class EscrowService {
     return parseFloat(row?.setting_value || '2.50');
   }
 
-  static async holdFunds({ transactionId, listingId, buyerId, sellerId, amount, currency }) {
+  static async holdFunds({ transactionId, listingId, buyerId, sellerId, amount, currency, provider, paymentReference, providerReference }) {
     const feePercent = await this.getPlatformFeePercent();
     const platformFee = parseFloat((amount * feePercent / 100).toFixed(2));
     const sellerAmount = parseFloat((amount - platformFee).toFixed(2));
@@ -24,6 +24,9 @@ class EscrowService {
       platform_fee_amount: platformFee,
       seller_amount: sellerAmount,
       status: 'held',
+      payment_provider: provider || 'paystack',
+      payment_reference: paymentReference || null,
+      provider_reference: providerReference || null,
       created_at: new Date(),
     });
 
@@ -80,7 +83,7 @@ class EscrowService {
     // Attempt real Paystack transfer to seller's bank account
     let payoutResult = { attempted: false, success: false, transferCode: null };
     try {
-      payoutResult = await PaymentService.payoutToSeller({
+      payoutResult = await require('./escrow').get(escrow.payment_provider || 'paystack').release({
         sellerId: escrow.seller_id,
         amount: escrow.seller_amount,
         reference: payoutReference,
@@ -197,7 +200,7 @@ class EscrowService {
 
       let payoutResult = { attempted: false, success: false, transferCode: null };
       try {
-        payoutResult = await PaymentService.payoutToSeller({
+        payoutResult = await require('./escrow').get(escrow.payment_provider || 'paystack').release({
           sellerId: escrow.seller_id,
           amount: escrow.seller_amount,
           reference: payoutReference,
@@ -231,9 +234,25 @@ class EscrowService {
         updated_at: new Date(),
       }, 'escrow_id = ? AND status = ?', [escrowId, 'disputed']);
 
+      // Send the money back through the provider that took it
+      let refund = { success: false, refundReference: null, error: null };
+      try {
+        refund = await require('./escrow').get(escrow.payment_provider || 'paystack').refund({
+          paymentReference: escrow.payment_reference,
+          providerReference: escrow.provider_reference || escrow.payment_reference,
+          amount: Number(escrow.amount),
+          reference: `REFUND-${escrowId.slice(0, 8)}-${Date.now()}`,
+          reason: adminNotes || 'Order refunded after a dispute',
+        });
+      } catch (err) {
+        refund.error = err.message;
+        console.error('Escrow refund failed:', err.message);
+      }
+
       await Database.update('escrow_transactions', {
         status: 'refunded',
         refunded_at: new Date(),
+        refund_reference: refund.refundReference || null,
         updated_at: new Date(),
       }, 'id = ?', [escrowId]);
 
@@ -243,15 +262,20 @@ class EscrowService {
         user_id: escrow.buyer_id,
         amount: escrow.amount,
         currency: 'NGN',
-        type: 'service_fee',
-        status: 'completed',
+        type: 'marketplace_refund',
+        status: refund.success ? 'completed' : 'pending',
+        reference: refund.refundReference || null,
+        payment_provider: escrow.payment_provider || 'paystack',
         related_entity_type: 'marketplace_listing',
         related_entity_id: escrow.listing_id,
         created_at: new Date(),
         updated_at: new Date(),
       });
 
-      return { success: true, action: 'refund', refundedAmount: escrow.amount };
+      return {
+        success: true, action: 'refund', refundedAmount: escrow.amount, refund,
+        message: refund.success ? 'Refund sent to the buyer.' : `Marked refunded. The refund still needs to be sent: ${refund.error || 'the payment provider did not confirm it'}.`,
+      };
     } else {
       throw new Error('Invalid action. Use "release" or "refund".');
     }

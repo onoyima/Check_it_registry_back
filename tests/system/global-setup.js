@@ -48,6 +48,9 @@ module.exports = async () => {
 
   // A police agency for the test region (admins set these up in real use)
   const Database = require('../../config');
+  // The tests use the marketplace, with Paystack as the stand-in escrow provider
+  await Database.query("UPDATE system_settings SET setting_value = 'on' WHERE setting_key = 'module_marketplace'");
+  await Database.query("UPDATE system_settings SET setting_value = 'paystack' WHERE setting_key = 'marketplace_escrow_provider'");
   await Database.query("INSERT INTO law_enforcement_agencies (id, agency_name, contact_email, region, active) VALUES (UUID(), 'Lagos State Police Command', 'police@test.proveownership.local', 'Lagos', 1)");
   const h = require('./helpers');
   const state = { users: {} };

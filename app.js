@@ -244,6 +244,10 @@ app.use('/api/admin-dashboard', require('./routes/admin-dashboard'));
 // Enhanced security and recovery routes
 app.use('/api/device-transfer', require('./routes/device-transfer'));
 app.use('/api/recovery-services', require('./routes/recovery-services'));
+// Switched-off modules answer 503 (admins can still use them)
+app.use('/api/modules', require('./routes/modules'));
+const { requireModule } = require('./services/ModuleService');
+app.use(['/api/marketplace', '/api/orders', '/api/escrow'], requireModule('marketplace'));
 app.use('/api/marketplace', require('./routes/marketplace'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/payments', require('./routes/payouts'));

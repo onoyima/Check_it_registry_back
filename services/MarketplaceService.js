@@ -226,6 +226,8 @@ class MarketplaceService {
     if (!buyer) throw new Error('Buyer not found');
 
     const PaymentService = require('./PaymentService');
+    const Escrow = require('./escrow');
+    const provider = await Escrow.current(); // who holds the money until delivery
     const reference = PaystackService.generateReference('PUR');
 
     // Create pending transaction
@@ -233,27 +235,25 @@ class MarketplaceService {
       buyerId, listing.price, 'marketplace_purchase', listingId, 'marketplace_listing'
     );
 
-    // Store reference on the transaction so we can verify later
-    await Database.update('transactions', { reference, updated_at: new Date() }, 'id = ?', [buyerTx.id]);
+    // Store reference and provider on the transaction so we can verify later
+    await Database.update('transactions', { reference, payment_provider: provider.name, updated_at: new Date() }, 'id = ?', [buyerTx.id]);
 
-    // Initialize Paystack payment
-    const paystack = await PaymentService.initializePaystackPayment({
-      userId: buyerId,
-      email: buyer.email,
-      amount: listing.price,
-      reference,
-      listingId,
-      metadata: { listing_title: listing.title, transaction_id: buyerTx.id },
+    const pay = await provider.initializePayment({
+      reference, amount: listing.price, email: buyer.email, name: buyer.name,
+      description: `Prove Ownership: ${listing.title}`,
+      callbackUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/callback?reference=${encodeURIComponent(reference)}&provider=${provider.name}`,
+      metadata: { listing_title: listing.title, transaction_id: buyerTx.id, userId: buyerId, listingId },
     });
 
     return {
       success: true,
       transactionId: buyerTx.id,
       reference,
-      authorizationUrl: paystack.authorizationUrl,
-      accessCode: paystack.accessCode,
+      provider: provider.name,
+      authorizationUrl: pay.authorizationUrl,
+      accessCode: pay.accessCode,
       amount: listing.price,
-      message: 'Redirect to Paystack to complete payment.',
+      message: 'Redirect to the payment page to complete payment.',
     };
   }
 
@@ -274,9 +274,11 @@ class MarketplaceService {
     if (!bulk && preview.length !== 1) throw new Error('Transaction not found');
     if (preview.every((tx) => tx.status === 'completed')) throw new Error('Transaction already completed');
 
-    // Verify payment with Paystack (outside the DB transaction: network call)
-    const verification = await PaymentService.verifyPaystackPayment(reference);
-    if (!verification.verified) throw new Error('Payment not confirmed');
+    // Verify with the provider that took this payment (outside the DB transaction: network call)
+    const Escrow = require('./escrow');
+    const providerName = preview[0].payment_provider || 'paystack';
+    const verification = await Escrow.get(providerName).verifyPayment(reference);
+    if (!verification.paid) throw new Error('Payment not confirmed');
     const expectedTotal = preview.reduce((sum, tx) => sum + Number(tx.amount), 0);
     if (verification.amount + 0.001 < expectedTotal) {
       throw new Error('Amount paid does not match the order total. Please contact support.');
@@ -312,6 +314,9 @@ class MarketplaceService {
         sellerId: listing.seller_id,
         amount: Number(buyerTx.amount),
         currency: listing.currency,
+        provider: providerName,
+        paymentReference: reference,
+        providerReference: verification.providerReference || null,
       });
       escrows.push({
         transactionId: buyerTx.id,
@@ -350,6 +355,8 @@ class MarketplaceService {
 
     const PaymentService = require('./PaymentService');
     const PaystackService = require('./PaystackService');
+    const Escrow = require('./escrow');
+    const provider = await Escrow.current();
     const reference = PaystackService.generateReference('BUL');
 
     // Create transactions for each listing sharing the same reference
@@ -358,26 +365,25 @@ class MarketplaceService {
       const buyerTx = await PaymentService.createTransaction(
         buyerId, amount, 'marketplace_purchase', listing.id, 'marketplace_listing'
       );
-      await Database.update('transactions', { reference, updated_at: new Date() }, 'id = ?', [buyerTx.id]);
+      await Database.update('transactions', { reference, payment_provider: provider.name, updated_at: new Date() }, 'id = ?', [buyerTx.id]);
     }
 
-    // Initialize single Paystack payment for the total
-    const paystack = await PaymentService.initializePaystackPayment({
-      userId: buyerId,
-      email: buyer.email,
-      amount: totalAmount,
-      reference,
-      listingId: null,
-      metadata: { item_count: items.length, transaction_count: listings.length },
+    // One payment for the whole cart
+    const pay = await provider.initializePayment({
+      reference, amount: totalAmount, email: buyer.email, name: buyer.name,
+      description: `Prove Ownership: ${items.length} item(s)`,
+      callbackUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/callback?reference=${encodeURIComponent(reference)}&provider=${provider.name}`,
+      metadata: { item_count: items.length, transaction_count: listings.length, userId: buyerId },
     });
 
     return {
       success: true,
       reference,
-      authorizationUrl: paystack.authorizationUrl,
-      accessCode: paystack.accessCode,
+      provider: provider.name,
+      authorizationUrl: pay.authorizationUrl,
+      accessCode: pay.accessCode,
       amount: totalAmount,
-      message: 'Redirect to Paystack to complete payment.',
+      message: 'Redirect to the payment page to complete payment.',
     };
   }
 

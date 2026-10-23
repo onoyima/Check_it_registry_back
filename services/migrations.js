@@ -1222,6 +1222,30 @@ const MIGRATIONS = [
           AND NOT EXISTS (SELECT 1 FROM device_custody c WHERE c.device_id = d.id AND c.status IN ('held','found','release_paid'))`).catch(() => {});
     },
   },
+  {
+    // Marketplace can be switched off (it starts off until payments are
+    // ready), and each sale remembers which payment company holds its money.
+    name: '028_modules_and_escrow_providers',
+    sql: [],
+    seed: async () => {
+      for (const sql of [
+        'ALTER TABLE transactions ADD COLUMN payment_provider VARCHAR(20) NULL',
+        'ALTER TABLE escrow_transactions ADD COLUMN payment_provider VARCHAR(20) NULL',
+        'ALTER TABLE escrow_transactions ADD COLUMN payment_reference VARCHAR(100) NULL',
+        'ALTER TABLE escrow_transactions ADD COLUMN provider_reference VARCHAR(100) NULL',
+        'ALTER TABLE escrow_transactions ADD COLUMN refund_reference VARCHAR(100) NULL',
+      ]) await db.query(sql).catch((e) => { if (!/Duplicate column/i.test(e.message)) console.warn('028:', e.message); });
+      // Sales made before this change were all Paystack
+      await db.query("UPDATE transactions SET payment_provider = 'paystack' WHERE payment_provider IS NULL AND type = 'marketplace_purchase'").catch(() => {});
+      await db.query("UPDATE escrow_transactions SET payment_provider = 'paystack' WHERE payment_provider IS NULL").catch(() => {});
+      const put = async (key, value, description) => {
+        const [row] = await db.query('SELECT id FROM system_settings WHERE setting_key = ?', [key]);
+        if (!row) await db.query("INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public) VALUES (UUID(), ?, ?, 'string', ?, 1)", [key, value, description]);
+      };
+      await put('module_marketplace', 'off', 'Marketplace on or off (off until payments and documents are ready)');
+      await put('marketplace_escrow_provider', 'monnify', 'Who holds marketplace payments until delivery: monnify, flutterwave, vesicash or paystack');
+    },
+  },
 ];
 
 async function runMigrations() {

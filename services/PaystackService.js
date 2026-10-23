@@ -79,6 +79,15 @@ class PaystackService {
     return response.data;
   }
 
+  // Refund a payment (fully, or part of it)
+  static async refund(reference, amount) {
+    const url = `${PAYSTACK_BASE_URL}/refund`;
+    const body = { transaction: reference };
+    if (amount) body.amount = Math.round(amount * 100);
+    const response = await axios.post(url, body, { headers: this.headers });
+    return response.data;
+  }
+
   // Get balance
   static async getBalance() {
     const url = `${PAYSTACK_BASE_URL}/balance`;
