@@ -1,4 +1,5 @@
 const Database = require('../config');
+const { escapeHtml } = require('../utils/escape-html');
 const CACVerificationService = require('./CACVerificationService');
 const NotificationService = require('./NotificationService');
 
@@ -226,7 +227,7 @@ class BusinessVerificationService {
             <p>A business verification attempt failed and requires manual review.</p>
             <div style="background:#FEF2F2;border-left:4px solid #EF4444;padding:16px;border-radius:8px;margin:16px 0;">
               <h3 style="color:#991B1B;margin:0 0 8px;">Verification Failure Details</h3>
-              <p><strong>Business:</strong> ${profile.business_name}</p>
+              <p><strong>Business:</strong> ${escapeHtml(profile.business_name)}</p>
               <p><strong>RC Number:</strong> ${rcNumber || profile.business_registration_number}</p>
               <p><strong>Submitted by:</strong> ${userId}</p>
               <p><strong>Reason:</strong> ${comparison.reason || 'Unknown error'}</p>

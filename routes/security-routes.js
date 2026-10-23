@@ -63,12 +63,10 @@ router.post('/mfa/verify', async (req, res) => {
       return res.status(400).json({ error: result.error || 'MFA verification failed' });
     }
 
-    const token = Database.generateJWT({
-      id: req.user.id,
-      mfa_verified: true,
+    const token = Database.generatePurposeJWT('mfa_token', {
+      userId: req.user.id,
       mfa_action: actionType,
-      mfa_time: Date.now()
-    });
+    }, '10m');
 
     res.json({
       success: true,
@@ -87,7 +85,7 @@ router.get('/verification-status', async (req, res) => {
     const user = await Database.selectOne('users', 'is_verified, nin_verified_at, nin_last_digits',
       'id = ?', [req.user.id]);
     const kycRecords = await Database.query(
-      'SELECT verification_type, status, verified_at FROM kyc_verifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5',
+      'SELECT verification_type, nin_status AS status, verified_at FROM kyc_verifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5',
       [req.user.id]
     );
     res.json({
@@ -150,6 +148,12 @@ router.post('/nin/verify', async (req, res) => {
       });
     }
 
+    const ninInvoice = await RevenueService.redeemPaidInvoice(req.user.id, pay_by_pass, ['nin_verification_fee']);
+    if (!ninInvoice) {
+      return res.status(402).json({ requiresPayment: true, amount: fee, error: 'We could not confirm your payment for NIN verification.' });
+    }
+    await RevenueService.chargeForCheck(req.user.id, fee, ninInvoice.reference).catch(() => {});
+
     const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'NIN_VERIFY', {
       ipAddress: req.clientIp
     });
@@ -195,8 +199,11 @@ router.post('/cac/verify', async (req, res) => {
         message: `Payment of ₦${fee} required for CAC verification.`
       });
     } else {
-      feeTransactionId = await RevenueService.chargeForCheck(req.user.id, fee, pay_by_pass);
-      await RevenueService.markInvoicePaid(pay_by_pass);
+      const cacInvoice = await RevenueService.redeemPaidInvoice(req.user.id, pay_by_pass, ['business_verification_fee']);
+      if (!cacInvoice) {
+        return res.status(402).json({ requiresPayment: true, amount: fee, error: 'We could not confirm your payment for business verification.' });
+      }
+      feeTransactionId = await RevenueService.chargeForCheck(req.user.id, fee, cacInvoice.reference);
     }
 
     const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'BUSINESS_VERIFY', {

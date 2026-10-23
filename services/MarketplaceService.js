@@ -7,14 +7,24 @@ class MarketplaceService {
     const { device_id, title, description, price, currency, condition, location, images } = data;
     
     // Verify device ownership and status
-    const device = await Database.selectOne('devices', 'id, user_id, status', 'id = ?', [device_id]);
+    const device = await Database.selectOne('devices', 'id, user_id, status, ownership_level', 'id = ?', [device_id]);
     if (!device) throw new Error('Device not found');
     if (device.user_id !== userId) throw new Error('You do not own this device');
     if (device.status === 'stolen' || device.status === 'lost') throw new Error('Cannot list a reported device');
+    // Buyers only see items whose owner we have checked
+    if (device.ownership_level === 'disputed') throw new Error('This item has an open ownership claim and cannot be listed until it is resolved');
+    if (device.ownership_level !== 'verified_owner') {
+      throw new Error('Only verified owners can sell. Open the item, upload your proof of ownership and list it once our team has approved it.');
+    }
     
     // Check if already listed active
-    const existing = await Database.selectOne('marketplace_listings', 'id', 'device_id = ? AND status = ?', [device_id, 'active']);
+    const existing = await Database.selectOne('marketplace_listings', 'id', "device_id = ? AND status IN ('active', 'paused')", [device_id]);
     if (existing) throw new Error('Device is already listed for sale');
+    const pendingSale = await Database.queryOne(
+      `SELECT e.id FROM escrow_transactions e JOIN marketplace_listings l ON e.listing_id = l.id
+       WHERE l.device_id = ? AND e.status IN ('held', 'disputed') LIMIT 1`, [device_id]);
+    if (pendingSale) throw new Error('This device has a sale waiting for delivery confirmation');
+    if (!(Number(price) > 0)) throw new Error('Price must be a positive number');
 
     const id = Database.generateUUID();
     const listingData = {
@@ -51,7 +61,7 @@ class MarketplaceService {
     } = filters;
 
     let sql = `
-      SELECT l.*, d.brand, d.model, d.category, u.name as seller_name,
+      SELECT l.*, d.brand, d.model, d.category, d.ownership_level, u.name as seller_name,
         CASE WHEN u.kyc_status = 'verified' THEN 'verified'
              WHEN bp.verification_status = 'verified' THEN 'verified'
              ELSE 'unverified' END as seller_verified
@@ -122,10 +132,7 @@ class MarketplaceService {
     sql += ` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
 
-    console.log('[getListings] SQL:', sql.replace(/\s+/g, ' ').trim());
-    console.log('[getListings] params:', JSON.stringify(params));
     const listings = await Database.query(sql, params);
-    console.log('[getListings] result count:', listings.length);
     
     // Parse images for frontend
     return listings.map(l => ({
@@ -140,7 +147,8 @@ class MarketplaceService {
 
   static async getListingById(id) {
     const sql = `
-      SELECT l.*, d.brand, d.model, d.category, d.storage_capacity, d.color, u.name as seller_name, u.id as seller_id,
+      SELECT l.*, d.brand, d.model, d.category, d.storage_capacity, d.color, d.ownership_level,
+        u.name as seller_name, u.id as seller_id, u.created_at as seller_since,
         CASE WHEN u.kyc_status = 'verified' THEN 'verified'
              WHEN bp.verification_status = 'verified' THEN 'verified'
              ELSE 'unverified' END as seller_verified
@@ -166,15 +174,37 @@ class MarketplaceService {
   }
 
   static async updateListing(userId, listingId, data) {
-    const listing = await Database.selectOne('marketplace_listings', 'seller_id', 'id = ?', [listingId]);
+    const listing = await Database.selectOne('marketplace_listings', 'seller_id, status', 'id = ?', [listingId]);
     if (!listing) throw new Error('Listing not found');
     if (listing.seller_id !== userId) throw new Error('Unauthorized');
 
-    const updateData = { ...data, updated_at: new Date() };
-    if (updateData.images) updateData.images = JSON.stringify(updateData.images);
+    // Sellers may edit the advert and pause/resume it, or mark a sold item
+    // as shipped. Buyer, featured flag, sale state etc. are not theirs to set.
+    const updateData = Database.pick(data, ['title', 'description', 'price', 'location']);
+    if (data.condition !== undefined || data.device_condition !== undefined) {
+      updateData.device_condition = data.device_condition ?? data.condition;
+    }
+    if (updateData.price !== undefined && !(Number(updateData.price) > 0)) {
+      throw new Error('Price must be a positive number');
+    }
+    if (Array.isArray(data.images)) updateData.images = JSON.stringify(data.images.filter((u) => typeof u === 'string'));
+    if (data.status !== undefined) {
+      const allowed = {
+        active: ['paused'],
+        paused: ['active'],
+        sold: ['shipped'],
+        shipped: ['completed'],
+      };
+      if (!(allowed[listing.status] || []).includes(data.status)) {
+        throw new Error(`Cannot change a ${listing.status} listing to ${data.status}`);
+      }
+      updateData.status = data.status;
+    }
+    if (Object.keys(updateData).length === 0) throw new Error('No editable fields supplied');
+    updateData.updated_at = new Date();
     
     await Database.update('marketplace_listings', updateData, 'id = ?', [listingId]);
-    return { id: listingId, ...data };
+    return { id: listingId, ...updateData };
   }
 
   static async deleteListing(userId, listingId) {
@@ -227,58 +257,74 @@ class MarketplaceService {
     };
   }
 
-  // Step 2: Verify Paystack payment, transfer ownership, close listing, hold escrow
+  // Step 2: Verify the Paystack payment, close the listing and hold the money
+  // in escrow. Runs in one DB transaction with row locks so two calls (e.g.
+  // the buyer's return page and the webhook) can't both succeed. Device
+  // ownership moves to the buyer only when they confirm delivery.
   static async completePurchase(reference) {
+    return this._completeByReference(reference, false);
+  }
+
+  static async _completeByReference(reference, bulk) {
     const PaymentService = require('./PaymentService');
     const EscrowService = require('./EscrowService');
 
-    // Find the transaction by reference
-    const buyerTx = await Database.selectOne('transactions', '*', 'reference = ?', [reference]);
-    if (!buyerTx) throw new Error('Transaction not found');
-    if (buyerTx.status === 'completed') throw new Error('Transaction already completed');
+    const preview = await Database.select('transactions', '*', 'reference = ?', [reference]);
+    if (!preview || preview.length === 0) throw new Error('Transaction not found');
+    if (!bulk && preview.length !== 1) throw new Error('Transaction not found');
+    if (preview.every((tx) => tx.status === 'completed')) throw new Error('Transaction already completed');
 
-    // Verify payment with Paystack
+    // Verify payment with Paystack (outside the DB transaction: network call)
     const verification = await PaymentService.verifyPaystackPayment(reference);
     if (!verification.verified) throw new Error('Payment not confirmed');
+    const expectedTotal = preview.reduce((sum, tx) => sum + Number(tx.amount), 0);
+    if (verification.amount + 0.001 < expectedTotal) {
+      throw new Error('Amount paid does not match the order total. Please contact support.');
+    }
 
-    const listing = await Database.selectOne('marketplace_listings', '*', 'id = ?', [buyerTx.related_entity_id]);
-    if (!listing) throw new Error('Listing not found');
-    if (listing.status !== 'active') throw new Error('Listing is no longer available');
+    const results = await Database.transaction(async (conn) => {
+      const [txs] = await conn.execute('SELECT * FROM transactions WHERE reference = ? FOR UPDATE', [reference]);
+      if (txs.some((tx) => tx.status === 'completed')) throw new Error('Transaction already completed');
 
-    const buyerId = buyerTx.user_id;
+      const out = [];
+      for (const buyerTx of txs) {
+        const [rows] = await conn.execute('SELECT * FROM marketplace_listings WHERE id = ? FOR UPDATE', [buyerTx.related_entity_id]);
+        const listing = rows[0];
+        if (!listing) throw new Error('Listing not found');
+        if (listing.status !== 'active') throw new Error(`Listing "${listing.title}" is no longer available`);
 
-    // Mark transaction completed
-    await Database.update('transactions', {
-      status: 'completed',
-      updated_at: new Date(),
-    }, 'id = ?', [buyerTx.id]);
-
-    // Transfer device ownership
-    await Database.update('devices', { user_id: buyerId, updated_at: new Date() }, 'id = ?', [listing.device_id]);
-
-    // Close listing
-    await Database.update('marketplace_listings', {
-      status: 'sold', buyer_id: buyerId, sold_at: new Date(), updated_at: new Date(),
-    }, 'id = ?', [listing.id]);
-
-    // Hold funds in escrow
-    const escrow = await EscrowService.holdFunds({
-      transactionId: buyerTx.id,
-      listingId: listing.id,
-      buyerId,
-      sellerId: listing.seller_id,
-      amount: listing.price,
-      currency: listing.currency,
+        await conn.execute("UPDATE transactions SET status = 'completed', updated_at = NOW() WHERE id = ?", [buyerTx.id]);
+        await conn.execute(
+          "UPDATE marketplace_listings SET status = 'sold', buyer_id = ?, sold_at = NOW(), updated_at = NOW() WHERE id = ?",
+          [buyerTx.user_id, listing.id]
+        );
+        out.push({ buyerTx, listing });
+      }
+      return out;
     });
 
-    return {
-      success: true,
-      transactionId: buyerTx.id,
-      escrowId: escrow.escrowId,
-      platformFee: escrow.platformFee,
-      sellerAmount: escrow.sellerAmount,
-      message: 'Payment held in escrow. Funds will be released to the seller after you confirm delivery.',
-    };
+    const escrows = [];
+    for (const { buyerTx, listing } of results) {
+      const escrow = await EscrowService.holdFunds({
+        transactionId: buyerTx.id,
+        listingId: listing.id,
+        buyerId: buyerTx.user_id,
+        sellerId: listing.seller_id,
+        amount: Number(buyerTx.amount),
+        currency: listing.currency,
+      });
+      escrows.push({
+        transactionId: buyerTx.id,
+        listingId: listing.id,
+        escrowId: escrow.escrowId,
+        platformFee: escrow.platformFee,
+        sellerAmount: escrow.sellerAmount,
+      });
+    }
+
+    const message = 'Payment held in escrow. The seller is paid, and the device is registered to you, when you confirm delivery.';
+    if (bulk) return { success: true, results: escrows, message };
+    return { success: true, ...escrows[0], message };
   }
 
   // Bulk: initiate purchase for multiple listings (cart checkout)
@@ -297,7 +343,7 @@ class MarketplaceService {
       if (listing.status !== 'active') throw new Error(`Listing "${listing.title}" is no longer available`);
       if (listing.seller_id === buyerId) throw new Error('Cannot buy your own listing');
 
-      const quantity = item.quantity || 1;
+      const quantity = 1; // each listing is one unique device
       listings.push({ listing, quantity });
       totalAmount += Number(listing.price) * quantity;
     }
@@ -337,103 +383,7 @@ class MarketplaceService {
 
   // Bulk: complete purchase for all listings in a cart order
   static async bulkCompletePurchase(reference) {
-    const PaymentService = require('./PaymentService');
-    const EscrowService = require('./EscrowService');
-
-    // Find all transactions with this reference
-    const buyerTxs = await Database.select('transactions', '*', 'reference = ?', [reference]);
-    if (!buyerTxs || buyerTxs.length === 0) throw new Error('No transactions found for this reference');
-
-    if (buyerTxs.some(tx => tx.status === 'completed')) throw new Error('Transaction already completed');
-
-    // Verify payment with Paystack
-    const verification = await PaymentService.verifyPaystackPayment(reference);
-    if (!verification.verified) throw new Error('Payment not confirmed');
-
-    const buyerId = buyerTxs[0].user_id;
-    const results = [];
-
-    for (const buyerTx of buyerTxs) {
-      const listing = await Database.selectOne('marketplace_listings', '*', 'id = ?', [buyerTx.related_entity_id]);
-      if (!listing) throw new Error('Listing not found');
-      if (listing.status !== 'active') throw new Error(`Listing "${listing.title}" is no longer available`);
-
-      // Mark transaction completed
-      await Database.update('transactions', {
-        status: 'completed',
-        updated_at: new Date(),
-      }, 'id = ?', [buyerTx.id]);
-
-      // Transfer device ownership
-      await Database.update('devices', { user_id: buyerId, updated_at: new Date() }, 'id = ?', [listing.device_id]);
-
-      // Close listing
-      await Database.update('marketplace_listings', {
-        status: 'sold', buyer_id: buyerId, sold_at: new Date(), updated_at: new Date(),
-      }, 'id = ?', [listing.id]);
-
-      // Hold funds in escrow
-      const escrow = await EscrowService.holdFunds({
-        transactionId: buyerTx.id,
-        listingId: listing.id,
-        buyerId,
-        sellerId: listing.seller_id,
-        amount: buyerTx.amount,
-        currency: listing.currency,
-      });
-
-      results.push({
-        transactionId: buyerTx.id,
-        listingId: listing.id,
-        escrowId: escrow.escrowId,
-        platformFee: escrow.platformFee,
-        sellerAmount: escrow.sellerAmount,
-      });
-    }
-
-    return {
-      success: true,
-      results,
-      message: 'Payment held in escrow. Funds will be released to the seller after you confirm delivery.',
-    };
-  }
-
-  // Legacy: direct purchase with simulated payment (for testing without Paystack)
-  static async purchaseListing(buyerId, listingId, paymentMethodId) {
-    const listing = await Database.selectOne('marketplace_listings', '*', 'id = ?', [listingId]);
-    if (!listing) throw new Error('Listing not found');
-    if (listing.status !== 'active') throw new Error('Listing is no longer available');
-    if (listing.seller_id === buyerId) throw new Error('Cannot buy your own listing');
-
-    const PaymentService = require('./PaymentService');
-    const buyer = await Database.selectOne('users', 'email, name', 'id = ?', [buyerId]);
-    if (!buyer) throw new Error('Buyer not found');
-
-    const reference = PaystackService.generateReference('MAN');
-
-    const buyerTx = await PaymentService.createTransaction(
-      buyerId, listing.price, 'marketplace_purchase', listingId, 'marketplace_listing'
-    );
-
-    // Mark completed immediately (simulated)
-    await Database.update('transactions', { status: 'completed', reference, updated_at: new Date() }, 'id = ?', [buyerTx.id]);
-
-    await Database.update('devices', { user_id: buyerId, updated_at: new Date() }, 'id = ?', [listing.device_id]);
-    await Database.update('marketplace_listings', {
-      status: 'sold', buyer_id: buyerId, sold_at: new Date(), updated_at: new Date(),
-    }, 'id = ?', [listingId]);
-
-    const EscrowService = require('./EscrowService');
-    const escrow = await EscrowService.holdFunds({
-      transactionId: buyerTx.id, listingId, buyerId, sellerId: listing.seller_id,
-      amount: listing.price, currency: listing.currency,
-    });
-
-    return {
-      success: true, transactionId: buyerTx.id, escrowId: escrow.escrowId,
-      platformFee: escrow.platformFee, sellerAmount: escrow.sellerAmount,
-      message: 'Payment held in escrow. Funds will be released to the seller after you confirm delivery.',
-    };
+    return this._completeByReference(reference, true);
   }
 
   static async sendMessage(senderId, listingId, content) {

@@ -136,6 +136,62 @@ class RevenueService {
     return invoiceId;
   }
 
+  // 'nin_verification', 'nin_verification_fee' -> 'nin_verification'
+  static feeBase(key) {
+    return String(key || '').replace(/_fee$/, '');
+  }
+
+  // Fee keys a user can be invoiced for (amounts always come from settings)
+  static get PAYABLE_FEES() {
+    return ['device_check_fee', 'report_verification_fee', 'nin_verification_fee',
+      'business_verification_fee', 'device_recovery_fee', 'business_onboarding_fee',
+      'nin_verification_per_device_fee'];
+  }
+
+  // Confirm with Paystack that an invoice was paid in full; marks it completed.
+  static async confirmInvoicePayment(invoice) {
+    if (!invoice) return false;
+    if (invoice.status === 'completed') return true;
+    try {
+      const PaystackService = require('./PaystackService');
+      const result = await PaystackService.verifyTransaction(invoice.reference);
+      const data = result && result.data;
+      const paidNaira = data ? Number(data.amount) / 100 : 0;
+      if (result && result.status && data && data.status === 'success'
+          && (data.currency || 'NGN') === 'NGN' && paidNaira + 0.001 >= Number(invoice.amount)) {
+        await Database.query(
+          "UPDATE payment_invoices SET status = 'completed', paid_at = NOW() WHERE id = ? AND status <> 'completed'",
+          [invoice.id]
+        );
+        return true;
+      }
+    } catch (err) {
+      console.warn('[RevenueService] Paystack verify failed for', invoice.reference, err.message);
+    }
+    return false;
+  }
+
+  // Use a paid invoice to unlock ONE paid action. The invoice must belong to
+  // the user, be for this kind of fee, be paid (checked with Paystack), and
+  // not have been used before. Returns the invoice, or null.
+  static async redeemPaidInvoice(userId, referenceOrId, feeKeys) {
+    if (!referenceOrId || typeof referenceOrId !== 'string') return null;
+    const invoice = await Database.selectOne(
+      'payment_invoices', '*', '(reference = ? OR id = ?) AND user_id = ?',
+      [referenceOrId, referenceOrId, userId]
+    );
+    if (!invoice) return null;
+    const wanted = (feeKeys || []).map((k) => this.feeBase(k));
+    if (!wanted.includes(this.feeBase(invoice.purpose))) return null;
+    if (!(await this.confirmInvoicePayment(invoice))) return null;
+    const result = await Database.query(
+      'UPDATE payment_invoices SET consumed_at = NOW() WHERE id = ? AND consumed_at IS NULL',
+      [invoice.id]
+    );
+    if (!result || result.affectedRows !== 1) return null;
+    return invoice;
+  }
+
   static async markInvoicePaid(reference) {
     await Database.update('payment_invoices',
       { status: 'completed', paid_at: new Date() },

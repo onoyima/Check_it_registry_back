@@ -7,27 +7,27 @@ const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');
 
-// Middleware to authenticate JWT tokens
-const authenticateToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Access token required' });
-    const decoded = Database.verifyJWT(token);
-    req.user = decoded;
-    next();
-  } catch (error) {
-    return res.status(403).json({ error: 'Invalid token' });
-  }
-};
+const { authenticateToken } = require('../middleware/auth');
+const { userRateLimit } = require('../middleware/userRateLimit');
+
+// NIN lookups cost money and return personal data: 5 per account per day.
+const ninLookupLimit = userRateLimit({ windowMs: 24 * 60 * 60 * 1000, max: 5, message: 'Too many NIN lookups today. Please try again tomorrow.' });
 
 // POST /api/kyc/lookup - Step 1: Lookup NIN
-router.post('/lookup', authenticateToken, async (req, res) => {
+// Only returns the record when it belongs to the person asking (the NIN's
+// names must match this account's name), so it can't be used to look up
+// strangers' personal data.
+router.post('/lookup', authenticateToken, ninLookupLimit, async (req, res) => {
   try {
     const { nin } = req.body;
     if (!nin) return res.status(400).json({ error: 'NIN is required' });
 
     const details = await KYCService.lookupNIN(nin);
+    const me = await Database.selectOne('users', 'name, first_name, middle_name, last_name', 'id = ?', [req.user.id]);
+    if (!me || !KYCService.namesMatch(details, me)) {
+      await Database.logAudit(req.user.id, 'NIN_LOOKUP_NAME_MISMATCH', 'users', req.user.id, null, null, req.ip).catch(() => {});
+      return res.status(400).json({ error: 'This NIN does not match the name on your account. Update your profile name to match your NIN, or contact support.' });
+    }
     res.json({ success: true, details });
   } catch (error) {
     res.status(400).json({ error: error.message });

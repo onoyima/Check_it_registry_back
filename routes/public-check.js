@@ -1,5 +1,6 @@
 // Public Device Check Route - MySQL Version
 const express = require('express');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
 const notifier = require('../services/EnhancedNotificationService');
 const RevenueService = require('../services/RevenueService');
@@ -8,9 +9,10 @@ const DeviceCheckService = require('../services/DeviceCheckService');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
+const { authenticateToken } = require('../middleware/auth');
 
-// Anonymous access is allowed but rate-limited and tracked
-// Authenticated users get higher limits and their checks are attributed
+// Device checks are for registered, logged-in users only. Every check is
+// attributed to the checker and kept in the device's check history.
 const noRestrictions = (req, res, next) => {
   next();
 };
@@ -49,7 +51,7 @@ router.get('/stats', noRestrictions, async (req, res) => {
 });
 
 // GET /api/public-check?imei=xxx or ?serial=xxx
-router.get('/', noRestrictions, async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
     const { imei, serial } = req.query;
 
@@ -59,20 +61,9 @@ router.get('/', noRestrictions, async (req, res) => {
       });
     }
 
-    // Resolve checker identity if token provided (smart alerting)
-    let checkerUserId = null;
-    let checker = null;
-    const authHeader = req.headers['authorization'];
-    if (authHeader) {
-      try {
-        const token = authHeader.split(' ')[1];
-        const decoded = Database.verifyJWT(token);
-        checkerUserId = decoded.id;
-        checker = await Database.selectOne('users', 'id, name, first_name, middle_name, last_name, email, role', 'id = ?', [checkerUserId]);
-      } catch (error) {
-        // Continue without identity for anonymous checks
-      }
-    }
+    // Checker identity (required: only registered users can check)
+    const checkerUserId = req.user.id;
+    const checker = req.user;
 
     // Require network and location context
     const xff = req.headers['x-forwarded-for'];
@@ -113,7 +104,7 @@ router.get('/', noRestrictions, async (req, res) => {
 
     // Search for device with owner KYC info
     let device;
-    const queryCols = 'd.id, d.user_id, d.imei, d.serial, d.brand, d.model, d.status, u.kyc_status, u.is_verified, u.caution_flag';
+    const queryCols = 'd.id, d.user_id, d.imei, d.serial, d.brand, d.model, d.status, d.ownership_level, u.kyc_status, u.is_verified, u.caution_flag';
     // Adjust join to be LEFT JOIN in case user key is missing (though should be enforced)
     const joinClause = 'LEFT JOIN users u ON d.user_id = u.id';
 
@@ -142,6 +133,7 @@ router.get('/', noRestrictions, async (req, res) => {
       // Base result
       result = {
         status: device.status,
+        ownership_level: device.ownership_level || 'registered',
         device_details: {
           brand: device.brand,
           model: device.model
@@ -236,7 +228,7 @@ router.get('/', noRestrictions, async (req, res) => {
             <h2 style="color:#B91C1C;">Reported Device Check Detected</h2>
             <p>A device flagged as <strong>${device.status}</strong> was checked via the public API.</p>
             <ul>
-              <li><strong>Device:</strong> ${device.brand} ${device.model}</li>
+              <li><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</li>
               <li><strong>Identifier:</strong> ${imei || serial}</li>
               <li><strong>IP:</strong> ${clientIP}</li>
               <li><strong>MAC:</strong> ${macAddress || 'Unknown'}</li>
@@ -291,7 +283,7 @@ router.get('/', noRestrictions, async (req, res) => {
 });
 
 // POST /api/public-check/enhanced - Enhanced device check with location tracking
-router.post('/enhanced', async (req, res) => {
+router.post('/enhanced', authenticateToken, async (req, res) => {
   try {
     const {
       deviceIdentifier,
@@ -329,18 +321,8 @@ router.post('/enhanced', async (req, res) => {
       });
     }
     
-    // Get user ID if authenticated
-    let checkerUserId = null;
-    const authHeader = req.headers['authorization'];
-    if (authHeader) {
-      try {
-        const token = authHeader.split(' ')[1];
-        const decoded = Database.verifyJWT(token);
-        checkerUserId = decoded.id;
-      } catch (error) {
-        // Continue without user ID for anonymous checks
-      }
-    }
+    // Checker is the logged-in user
+    const checkerUserId = req.user.id;
 
     /* Device check fee logic for authenticated users */
     if (checkerUserId) {
@@ -363,7 +345,15 @@ router.post('/enhanced', async (req, res) => {
               message: `Free check limit reached. Payment of ₦${fee} required for device checks.`
             });
           }
-          await RevenueService.chargeForCheck(checkerUserId, fee, pay_by_pass);
+          const paidInvoice = await RevenueService.redeemPaidInvoice(checkerUserId, pay_by_pass, ['device_check_fee']);
+          if (!paidInvoice) {
+            return res.status(402).json({
+              requiresPayment: true,
+              amount: fee,
+              error: 'We could not confirm your payment for this check. If you were charged, contact support with your payment reference.'
+            });
+          }
+          await RevenueService.chargeForCheck(checkerUserId, fee, paidInvoice.reference);
         }
       }
     }
@@ -500,6 +490,10 @@ router.post('/enhanced', async (req, res) => {
 
   } catch (error) {
     console.error('Enhanced device check error:', error);
+    // Bad input (missing location etc.) is the checker's to fix, so say what it is
+    if (error.status === 400 || /^(Missing required field|Invalid location data|Invalid GPS coordinates)/.test(error.message || '')) {
+      return res.status(400).json({ error: error.message === 'Invalid location data' ? 'We could not read your location. Turn on location and try again.' : error.message });
+    }
     res.status(500).json({ 
       error: 'Failed to perform device check' 
     });
@@ -507,7 +501,30 @@ router.post('/enhanced', async (req, res) => {
 });
 
 // GET /api/public-check/history - Retrieve device check history with checker details
-router.get('/history', async (req, res) => {
+// Check history / tracker: who checked a device, when and from where.
+// Available to logged-in users.
+// GET /api/public-check/mine - the checks I made, newest first
+router.get('/mine', authenticateToken, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const checks = await Database.query(
+      `SELECT dc.id, dc.device_id, dc.check_type, dc.check_result, dc.is_paid, dc.created_at,
+              d.brand, d.model, d.category, d.status AS device_status
+       FROM device_check_logs dc
+       LEFT JOIN devices d ON dc.device_id = d.id
+       WHERE dc.checker_user_id = ?
+       ORDER BY dc.created_at DESC
+       LIMIT ?`, [req.user.id, limit]);
+    res.json({ success: true, data: { checks } });
+  } catch (error) {
+    console.error('My checks error:', error);
+    res.status(500).json({ error: 'Failed to load your checks' });
+  }
+});
+
+const STAFF = ['admin', 'lea'];
+
+router.get('/history', authenticateToken, async (req, res) => {
   try {
     const { device_id, identifier, limit = 50 } = req.query;
 
@@ -521,6 +538,13 @@ router.get('/history', async (req, res) => {
 
     if (!deviceId && !identifier) {
       return res.status(400).json({ error: 'Provide device_id or identifier' });
+    }
+
+    // "Who checked this item" belongs to the item's owner (and staff), not
+    // to anyone who knows its number: it shows the checkers' details.
+    if (!STAFF.includes(req.user.role)) {
+      const owned = deviceId ? await Database.selectOne('devices', 'id', 'id = ? AND user_id = ?', [deviceId, req.user.id]) : null;
+      if (!owned) return res.status(403).json({ error: 'Only the owner can see who checked this item' });
     }
 
     const checks = await Database.query(
@@ -556,7 +580,7 @@ router.get('/history', async (req, res) => {
 });
 
 // GET /api/public-check/report/:id - Retrieve a specific check record
-router.get('/report/:id', async (req, res) => {
+router.get('/report/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const check = await Database.selectOne('device_check_logs', '*', 'id = ?', [id]);
@@ -570,6 +594,9 @@ router.get('/report/:id', async (req, res) => {
         'devices', 'id, brand, model, imei, serial, status, user_id', 'id = ?', [check.device_id]
       );
     }
+    // Only the person who checked, the item's owner, or staff may read it
+    const allowed = STAFF.includes(req.user.role) || check.checker_user_id === req.user.id || (device && device.user_id === req.user.id);
+    if (!allowed) return res.status(404).json({ error: 'Check record not found' });
 
     let checker = null;
     if (check.checker_user_id) {

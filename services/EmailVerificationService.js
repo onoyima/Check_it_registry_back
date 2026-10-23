@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
 const NotificationService = require('./NotificationService');
 const EmailTemplate = require('./EmailTemplate');
@@ -163,7 +164,7 @@ class EmailVerificationService {
     const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
     
     const content = `
-      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
       <p>Thank you for registering with <strong>Prove Ownership</strong>. To complete your registration and start protecting your devices, please verify your email address by clicking the button below.</p>
       
       <div style="text-align: center; margin: 30px 0;">

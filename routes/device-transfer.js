@@ -1,5 +1,6 @@
 // Device Transfer Routes - Ownership Transfer System
 const express = require("express");
+const { escapeHtml } = require('../utils/escape-html');
 const crypto = require("crypto");
 const Database = require("../config");
 const { authenticateToken, requireRole } = require("../middleware/auth");
@@ -125,8 +126,8 @@ router.post("/initiate-legacy", async (req, res) => {
       "Device Transfer Request",
       `
         <h2>Device Transfer Request</h2>
-        <p>You have received a device transfer request from <strong>${getDisplayName(req.user)}</strong> (${req.user.email}).</p>
-        <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+        <p>You have received a device transfer request from <strong>${escapeHtml(getDisplayName(req.user))}</strong> (${req.user.email}).</p>
+        <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
         <p><strong>IMEI:</strong> ${device.imei || "Not provided"}</p>
         <p><strong>Serial:</strong> ${device.serial || "Not provided"}</p>
         ${
@@ -154,8 +155,8 @@ router.post("/initiate-legacy", async (req, res) => {
       "Transfer Request Sent",
       `
         <h2>Transfer Request Sent</h2>
-        <p>Your device transfer request has been sent to <strong>${getDisplayName(toUser)}</strong> (${toUser.email}).</p>
-        <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+        <p>Your device transfer request has been sent to <strong>${escapeHtml(getDisplayName(toUser))}</strong> (${toUser.email}).</p>
+        <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
         <p><strong>Transfer Code:</strong> ${transferCode}</p>
         <p>The recipient has 24 hours to accept or reject the transfer.</p>
         <p>You will be notified once they respond.</p>
@@ -277,8 +278,8 @@ router.post("/accept-legacy", async (req, res) => {
         "Device Transfer Completed",
         `
           <h2>Device Transfer Completed</h2>
-          <p>Your device transfer has been accepted by <strong>${getDisplayName(req.user)}</strong>.</p>
-          <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+          <p>Your device transfer has been accepted by <strong>${escapeHtml(getDisplayName(req.user))}</strong>.</p>
+          <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
           <p><strong>Transfer Code:</strong> ${transfer_code}</p>
           <p>The device ownership has been successfully transferred.</p>
           ${
@@ -302,8 +303,8 @@ router.post("/accept-legacy", async (req, res) => {
         "Device Transfer Accepted",
         `
           <h2>Device Transfer Accepted</h2>
-          <p>You have successfully accepted the device transfer from <strong>${getDisplayName(fromUser)}</strong>.</p>
-          <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+          <p>You have successfully accepted the device transfer from <strong>${escapeHtml(getDisplayName(fromUser))}</strong>.</p>
+          <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
           <p>The device is now registered under your account and is protected in our registry.</p>
           <p>You can view and manage this device in your dashboard.</p>
         `,
@@ -410,8 +411,8 @@ router.post("/reject-legacy", async (req, res) => {
       "Device Transfer Rejected",
       `
         <h2>Device Transfer Rejected</h2>
-        <p>Your device transfer request has been rejected by <strong>${getDisplayName(req.user)}</strong>.</p>
-        <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+        <p>Your device transfer request has been rejected by <strong>${escapeHtml(getDisplayName(req.user))}</strong>.</p>
+        <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
         <p><strong>Transfer Code:</strong> ${transfer_code}</p>
         ${
           rejection_reason
@@ -587,8 +588,8 @@ router.delete("/:transferId", async (req, res) => {
         "Device Transfer Cancelled",
         `
           <h2>Device Transfer Cancelled</h2>
-          <p>The device transfer request from <strong>${getDisplayName(req.user)}</strong> has been cancelled.</p>
-          <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+          <p>The device transfer request from <strong>${escapeHtml(getDisplayName(req.user))}</strong> has been cancelled.</p>
+          <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
           <p><strong>Transfer Code:</strong> ${transfer.transfer_code}</p>
           <p>This transfer is no longer valid.</p>
         `,
@@ -778,7 +779,7 @@ router.post('/verify-otp', authenticateToken, async (req, res) => {
     }
 
     
-    const result = await OwnershipTransferService.verifyTransferOTP(transferId, otpCode);
+    const result = await OwnershipTransferService.verifyTransferOTP(transferId, otpCode, req.user.id);
 
     if (!result.success) {
       return res.status(400).json({ error: result.error });

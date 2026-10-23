@@ -1,4 +1,5 @@
 const Database = require('../config');
+const { escapeHtml } = require('../utils/escape-html');
 const NINVerificationService = require('./NINVerificationService');
 const EmailTemplate = require('./EmailTemplate');
 
@@ -9,7 +10,8 @@ class IdentityMatchingService {
    */
   static async isUserKycVerified(userId) {
     const user = await Database.selectOne('users', 'kyc_status, is_verified', 'id = ?', [userId]);
-    return user && user.kyc_status === 'verified' && user.is_verified === true;
+    // MySQL returns 1/0 for booleans, so compare loosely (=== true was always false)
+    return !!user && user.kyc_status === 'verified' && !!Number(user.is_verified);
   }
 
   /**
@@ -205,7 +207,7 @@ class IdentityMatchingService {
           <p>A user's identity verification failed during report submission.</p>
           <div style="background: #FEF2F2; border-left: 4px solid #EF4444; padding: 16px; border-radius: 8px; margin: 15px 0;">
             <p style="margin: 0; color: #991B1B;"><strong>User:</strong> ${userName} (${user?.email})</p>
-            <p style="margin: 5px 0 0; color: #991B1B;"><strong>Reason:</strong> ${matchResult.reason}</p>
+            <p style="margin: 5px 0 0; color: #991B1B;"><strong>Reason:</strong> ${escapeHtml(matchResult.reason)}</p>
             <p style="margin: 5px 0 0; color: #991B1B;"><strong>Matched Fields:</strong> ${matchResult.matchedFields.join(', ') || 'None'}</p>
             <p style="margin: 5px 0 0; color: #991B1B;"><strong>Failed Fields:</strong> ${matchResult.failedFields.join(', ') || 'N/A'}</p>
           </div>

@@ -15,6 +15,19 @@ class KYCService {
     return PIIEncryptionService.decrypt(text);
   }
 
+  // True when the NIN record's first and last names both appear in the
+  // account holder's name (order-insensitive, case/accents ignored).
+  static namesMatch(ninRecord, user) {
+    const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z\s-]/g, ' ');
+    const tokens = new Set(
+      norm([user.first_name, user.middle_name, user.last_name, user.name].filter(Boolean).join(' '))
+        .split(/[\s-]+/).filter(Boolean)
+    );
+    const first = norm(ninRecord.first_name).split(/[\s-]+/).filter(Boolean)[0];
+    const last = norm(ninRecord.last_name).split(/[\s-]+/).filter(Boolean)[0];
+    return !!(first && last && tokens.has(first) && tokens.has(last));
+  }
+
   static async lookupNIN(nin) {
     if (!nin || !/^\d{11}$/.test(nin)) {
       throw new Error('Invalid NIN format. Must be 11 digits.');
@@ -86,13 +99,20 @@ class KYCService {
 
       const faceMatchResult = await this.performFaceMatch(selfiePath, ninLookup.photo_url, ninLookup.provider);
 
+      const accountUser = await Database.selectOne('users', 'name, first_name, middle_name, last_name', 'id = ?', [userId]);
+      const nameOk = accountUser ? this.namesMatch(ninLookup, accountUser) : false;
+
       let newStatus = 'failed';
       let isVerified = false;
 
-      if (faceMatchResult.score > 85 && faceMatchResult.liveness) {
+      // Automatic approval only when the selfie was compared with the NIN
+      // photo itself (not a liveness check alone) AND the NIN belongs to
+      // someone with this account's name. Anything weaker goes to an admin.
+      const comparedWithNinPhoto = faceMatchResult.method === 'prembly_face_compare';
+      if (nameOk && comparedWithNinPhoto && faceMatchResult.score > 85 && faceMatchResult.liveness) {
         newStatus = 'verified';
         isVerified = true;
-      } else if (faceMatchResult.score >= 60) {
+      } else if (nameOk && faceMatchResult.score >= 60) {
         newStatus = 'pending';
         isVerified = false;
       }
@@ -164,7 +184,8 @@ class KYCService {
       try {
         const livenessResult = await this.premblyLivenessCheck(selfiePath);
         if (livenessResult.liveness) {
-          return { score: 90, liveness: true, method: 'prembly_liveness' };
+          // Live person, but NOT compared with the NIN photo: manual review only
+          return { score: 70, liveness: true, method: 'prembly_liveness' };
         }
         return { score: 40, liveness: false, method: 'prembly_liveness_failed' };
       } catch (error) {

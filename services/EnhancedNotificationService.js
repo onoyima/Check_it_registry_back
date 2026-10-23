@@ -1,4 +1,5 @@
 const { Resend } = require('resend');
+const { escapeHtml } = require('../utils/escape-html');
 const TermiiService = require('./TermiiService');
 const webpush = require('web-push');
 const { logActivity } = require('./AuditService');
@@ -37,6 +38,8 @@ class EnhancedNotificationService {
 
   // Send email notification
   async sendEmail(to, subject, htmlContent, textContent = null) {
+    const outbox = require('../utils/test-outbox');
+    if (outbox.enabled()) return outbox.push(to, subject, htmlContent);
     if (!this.resend) {
       throw new Error('Resend not configured: RESEND_API_KEY is missing');
     }
@@ -129,14 +132,14 @@ class EnhancedNotificationService {
         const statusText = approved ? '#166534' : '#991B1B';
 
         const content = `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>Your device verification request has been <strong>${status}</strong>.</p>
 
           <div style="background: ${statusBg}; border-left: 4px solid ${statusColor}; padding: 16px; border-radius: 8px; margin: 20px 0;">
             <h3 style="margin: 0 0 10px; color: ${statusText}; font-size: 15px;">Device Details</h3>
             <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: ${statusText};">
-              <tr><td style="font-weight: 600; padding-right: 12px;">Brand:</td><td>${device.brand}</td></tr>
-              <tr><td style="font-weight: 600; padding-right: 12px;">Model:</td><td>${device.model}</td></tr>
+              <tr><td style="font-weight: 600; padding-right: 12px;">Brand:</td><td>${escapeHtml(device.brand)}</td></tr>
+              <tr><td style="font-weight: 600; padding-right: 12px;">Model:</td><td>${escapeHtml(device.model)}</td></tr>
               <tr><td style="font-weight: 600; padding-right: 12px;">IMEI:</td><td>${device.imei || 'N/A'}</td></tr>
               <tr><td style="font-weight: 600; padding-right: 12px;">Status:</td><td>${approved ? 'Verified' : 'Verification Failed'}</td></tr>
             </table>
@@ -200,7 +203,7 @@ class EnhancedNotificationService {
             subject = 'Device Check Alert';
             title = 'Device Check Alert';
             content = `
-              <p>Hello <strong>${user.name}</strong>,</p>
+              <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
               <p>Someone has checked your device in our system:</p>
               <div style="background: #FFFBEB; border-left: 4px solid #F59E0B; padding: 16px; border-radius: 8px; margin: 20px 0;">
                 <h3 style="margin: 0 0 10px; color: #92400E; font-size: 15px;">Device: ${deviceName}</h3>
@@ -219,14 +222,14 @@ class EnhancedNotificationService {
             subject = 'Suspicious Activity Alert';
             title = 'Suspicious Activity Detected';
             content = `
-              <p>Hello <strong>${user.name}</strong>,</p>
+              <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
               <p><strong>We've detected suspicious activity</strong> related to your device.</p>
               <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 16px; border-radius: 8px; margin: 20px 0;">
                 <h3 style="margin: 0 0 10px; color: #991B1B; font-size: 15px;">Device: ${deviceName}</h3>
                 <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #991B1B;">
                   <tr><td style="font-weight: 600; padding-right: 12px;">Activity:</td><td>${details.activity}</td></tr>
                   <tr><td style="font-weight: 600; padding-right: 12px;">Time:</td><td>${new Date().toLocaleString()}</td></tr>
-                  <tr><td style="font-weight: 600; padding-right: 12px;">Details:</td><td>${details.description}</td></tr>
+                  <tr><td style="font-weight: 600; padding-right: 12px;">Details:</td><td>${escapeHtml(details.description)}</td></tr>
                 </table>
               </div>
               <p><strong>Recommended Actions:</strong></p>
@@ -283,7 +286,7 @@ class EnhancedNotificationService {
       const subject = `Report Status Updated - Case #${report.case_id}`;
       const title = `Report Status Updated`;
       const content = `
-        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
         <p>Your report status has been updated:</p>
 
         <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 20px 0;">
@@ -329,7 +332,7 @@ class EnhancedNotificationService {
       const subject = `Welcome to Prove Ownership!`;
       
       const content = `
-        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
         <p>Welcome to <strong>Prove Ownership</strong>, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
 
         <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 20px; border-radius: 8px; margin: 25px 0;">

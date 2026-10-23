@@ -1,7 +1,7 @@
 // Recovery Services Routes - Payment-based device recovery
 const express = require('express');
 const Database = require('../config');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, requireRole } = require('../middleware/auth');
 const PaymentRecoveryService = require('../services/PaymentRecoveryService');
 const RevenueService = require('../services/RevenueService');
 
@@ -36,11 +36,13 @@ router.post('/create', async (req, res) => {
     // Best-effort MFA token validation (present = recently MFA-verified)
     if (mfaToken) {
       try {
-        const payload = JSON.parse(Buffer.from(mfaToken.split('.')[1], 'base64').toString());
-        if (payload.exp && payload.exp * 1000 < Date.now()) {
-          return res.status(403).json({ error: 'MFA token expired. Please re-verify.', requiresMfa: true });
+        let payload;
+        try {
+          payload = Database.verifyJWT(mfaToken);
+        } catch (_) {
+          return res.status(403).json({ error: 'MFA token expired or invalid. Please re-verify.', requiresMfa: true });
         }
-        if (payload.userId && payload.userId !== req.user.id) {
+        if (payload.type !== 'mfa_token' || payload.userId !== req.user.id) {
           return res.status(403).json({ error: 'Invalid MFA token', requiresMfa: true });
         }
       } catch (e) {
@@ -71,16 +73,11 @@ router.post('/create', async (req, res) => {
     }
 
     if (fee > 0 && bypass_payment) {
-      // Validate the invoice belongs to this user and is still pending
-      const invoice = await Database.selectOne(
-        'payment_invoices', 'id, reference, status', 'user_id = ? AND (id = ? OR reference = ?)',
-        [req.user.id, bypass_payment, bypass_payment]
-      );
-      if (!invoice || invoice.status === 'completed') {
-        return res.status(400).json({ error: 'Invalid or already-used payment reference' });
+      // The invoice must be this user's, paid (confirmed with Paystack) and unused
+      const invoice = await RevenueService.redeemPaidInvoice(req.user.id, bypass_payment, ['device_recovery_fee']);
+      if (!invoice) {
+        return res.status(402).json({ requiresPayment: true, amount: fee, error: 'We could not confirm your payment for the recovery service.' });
       }
-      await Database.update('payment_invoices',
-        { status: 'completed', paid_at: new Date() }, 'id = ?', [invoice.id]);
 
       // Record revenue transaction so the revenue dashboard reflects the fee
       const txnId = Database.generateUUID();
@@ -90,7 +87,7 @@ router.post('/create', async (req, res) => {
         type: 'device_recovery_fee',
         amount: fee,
         status: 'completed',
-        reference: bypass_payment,
+        reference: invoice.reference,
         description: 'Device recovery service fee',
         created_at: new Date()
       });
@@ -120,7 +117,8 @@ router.post('/create', async (req, res) => {
 });
 
 // POST /api/recovery-services/payment-webhook - Payment completion webhook
-router.post('/payment-webhook', async (req, res) => {
+// Admin-only manual completion (real payments are confirmed via Paystack)
+router.post('/payment-webhook', requireRole(['admin']), async (req, res) => {
   try {
     const { paymentIntentId, status } = req.body;
 
@@ -166,7 +164,7 @@ router.put('/:id/status', async (req, res) => {
     }
 
     // Check if user is an agent or admin
-    if (req.user.role !== 'admin') {
+    if (!['admin', 'super_admin'].includes(req.user.role)) {
       // Check if user is assigned agent
       const service = await Database.selectOne(
         'recovery_services',
@@ -179,7 +177,10 @@ router.put('/:id/status', async (req, res) => {
         return res.status(404).json({ error: 'Recovery service not found' });
       }
 
-      // For now, allow any authenticated user to update (in production, implement proper agent authentication)
+      // Only the assigned recovery agent (or an admin) may change status
+      if (!service.assigned_agent_id || service.assigned_agent_id !== req.user.id) {
+        return res.status(403).json({ error: 'Only the assigned agent or an admin can update this service' });
+      }
     }
 
     const result = await PaymentRecoveryService.updateRecoveryStatus(

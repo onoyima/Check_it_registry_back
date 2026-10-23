@@ -13,13 +13,13 @@ class PaystackService {
   }
 
   // Initialize a transaction (buyer pays)
-  static async initializeTransaction({ email, amount, reference, metadata }) {
+  static async initializeTransaction({ email, amount, reference, metadata, callbackUrl }) {
     const url = `${PAYSTACK_BASE_URL}/transaction/initialize`;
     const response = await axios.post(url, {
       email,
       amount: Math.round(amount * 100), // Paystack uses kobo
       reference,
-      callback_url: `${FRONTEND_URL}/payment/callback`,
+      callback_url: callbackUrl || `${FRONTEND_URL}/payment/callback`,
       metadata,
     }, { headers: this.headers });
     return response.data;
@@ -28,7 +28,7 @@ class PaystackService {
   // Verify transaction after payment
   static async verifyTransaction(reference) {
     const url = `${PAYSTACK_BASE_URL}/transaction/verify/${reference}`;
-    const response = await axios.get(url, { headers: this.headers });
+    const response = await axios.get(url, { headers: this.headers, timeout: 15000 });
     return response.data;
   }
 

@@ -1,5 +1,6 @@
 // Notification Service - Email and Push Notifications
 const { Resend } = require('resend');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require("../config");
 const EmailTemplate = require("./EmailTemplate");
 const TermiiService = require('./TermiiService');
@@ -121,6 +122,8 @@ class NotificationService {
 
   // Send email notification (from notification object)
   async sendEmail(notification) {
+    const outbox = require('../utils/test-outbox');
+    if (outbox.enabled()) { outbox.push(notification.recipient, notification.subject, notification.message); return true; }
     if (!this.resend) {
       throw new Error('Resend not configured: RESEND_API_KEY is missing');
     }
@@ -151,6 +154,8 @@ class NotificationService {
 
   // Send email directly (for OTP and immediate notifications)
   async sendEmailDirect(to, subject, htmlContent) {
+    const outbox = require('../utils/test-outbox');
+    if (outbox.enabled()) { outbox.push(to, subject, htmlContent); return { success: true }; }
     if (!this.resend) {
       throw new Error('Resend not configured: RESEND_API_KEY is missing');
     }
@@ -232,7 +237,7 @@ class NotificationService {
     const subject = "Device Verification Approved";
     const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
       <p><strong>Great news!</strong> Your device has been verified and approved.</p>
       <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 15px 0;">
         <p style="margin: 0; color: #166534; font-size: 15px;"><strong>${deviceName}</strong></p>
@@ -267,7 +272,7 @@ class NotificationService {
     const subject = "Device Verification Rejected";
     const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
       <p>Unfortunately, we couldn't verify your device.</p>
       <div style="background: #FEF2F2; border-left: 4px solid #EF4444; padding: 16px; border-radius: 8px; margin: 15px 0;">
         <p style="margin: 0; color: #991B1B; font-size: 15px;"><strong>${deviceName}</strong></p>
@@ -303,7 +308,7 @@ class NotificationService {
     const subject = `Device Reported Stolen - Case ${caseId}`;
     const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
       <p><strong>Your device has been marked as stolen</strong> in our system.</p>
       <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 16px; border-radius: 8px; margin: 15px 0;">
         <p style="margin: 0; color: #991B1B; font-size: 15px;"><strong>${deviceName}</strong></p>
@@ -339,7 +344,7 @@ class NotificationService {
 
     const subject = `New Case Assignment - ${caseInfo.case_id}`;
     const message = `
-      <p>Hello <strong>${lea.agency_name}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(lea.agency_name)}</strong>,</p>
       <p>A new <strong>${caseInfo.report_type}</strong> case has been assigned to your agency.</p>
       <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
         <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
@@ -380,7 +385,7 @@ class NotificationService {
     const subject = `Your Device May Have Been Found - Case ${caseId}`;
     const deviceName = `${deviceInfo.brand} ${deviceInfo.model}`;
     const message = `
-      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
       <p><strong>Great news!</strong> Someone has reported finding a device matching yours.</p>
       <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 15px 0;">
         <p style="margin: 0; color: #166534; font-size: 15px;"><strong>${deviceName}</strong></p>

@@ -1,7 +1,7 @@
 // Per-user rate limiting middleware
 // Falls back to IP-based limiting for unauthenticated requests
 
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 
 // Per-user rate limiter - uses user ID as key when authenticated, IP otherwise
 const userRateLimit = (options = {}) => {
@@ -16,7 +16,7 @@ const userRateLimit = (options = {}) => {
     max,
     keyGenerator: (req) => {
       if (req.user?.id) return `user:${req.user.id}`;
-      return req.ip || req.headers['x-forwarded-for'] || 'unknown';
+      return ipKeyGenerator(req.ip || 'unknown');
     },
     standardHeaders: true,
     legacyHeaders: false,
@@ -35,7 +35,7 @@ const strictUserRateLimit = userRateLimit({
 const publicRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50,
-  keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] || 'unknown',
+  keyGenerator: (req) => ipKeyGenerator(req.ip || 'unknown'),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests. Please try again later.' },

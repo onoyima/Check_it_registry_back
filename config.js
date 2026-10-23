@@ -37,6 +37,19 @@ try {
   console.error('Database connection failed:', error.message);
 }
 
+// Column/table names can't be sent as SQL parameters, so every identifier
+// that reaches insert()/update() is checked and quoted. This stops a request
+// body key such as "status = 'verified', brand" from being written into SQL.
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+function safeIdentifier(name) {
+  if (typeof name !== 'string' || !IDENTIFIER.test(name)) {
+    const err = new Error(`Invalid field name: ${String(name).slice(0, 40)}`);
+    err.status = 400;
+    throw err;
+  }
+  return mysql.escapeId(name);
+}
+
 // Database helper functions
 class Database {
   static async query(sql, params = []) {
@@ -86,11 +99,11 @@ class Database {
     const safe = (table === 'users' || table === 'account_deletions' || table === 'business_profiles')
       ? PIIEncryptionService.encryptContactFields(data)
       : data;
-    const keys = Object.keys(safe);
-    const values = Object.values(safe);
+    const keys = Object.keys(safe).filter((k) => safe[k] !== undefined);
+    const values = keys.map((k) => safe[k]);
     const placeholders = keys.map(() => '?').join(', ');
     
-    const sql = `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`;
+    const sql = `INSERT INTO ${safeIdentifier(table)} (${keys.map(safeIdentifier).join(', ')}) VALUES (${placeholders})`;
     const result = await this.query(sql, values);
     
     return {
@@ -107,11 +120,14 @@ class Database {
     const safe = (table === 'users' || table === 'account_deletions' || table === 'business_profiles')
       ? PIIEncryptionService.encryptContactFields(data)
       : data;
-    const keys = Object.keys(safe);
-    const values = Object.values(safe);
-    const setClause = keys.map(key => `${key} = ?`).join(', ');
+    const keys = Object.keys(safe).filter((k) => safe[k] !== undefined);
+    const values = keys.map((k) => safe[k]);
+    if (keys.length === 0) {
+      return { affectedRows: 0, changedRows: 0 };
+    }
+    const setClause = keys.map(key => `${safeIdentifier(key)} = ?`).join(', ');
     
-    const sql = `UPDATE ${table} SET ${setClause} WHERE ${where}`;
+    const sql = `UPDATE ${safeIdentifier(table)} SET ${setClause} WHERE ${where}`;
     const result = await this.query(sql, [...values, ...whereParams]);
     
     return {
@@ -121,7 +137,7 @@ class Database {
   }
 
   static async delete(table, where, whereParams = []) {
-    const sql = `DELETE FROM ${table} WHERE ${where}`;
+    const sql = `DELETE FROM ${safeIdentifier(table)} WHERE ${where}`;
     const result = await this.query(sql, whereParams);
     
     return {
@@ -148,7 +164,10 @@ class Database {
   }
 
   static async selectOne(table, columns = '*', where = '', whereParams = []) {
-    const rows = await this.select(table, columns, where, whereParams, '', '1');
+    // Some callers already put "ORDER BY ... LIMIT 1" in the where text; adding a
+    // second LIMIT is a SQL error, so only add it when it is missing.
+    const hasLimit = /\blimit\s+\d+\s*$/i.test(String(where || ''));
+    const rows = await this.select(table, columns, where, whereParams, '', hasLimit ? '' : '1');
     return rows[0] || null;
   }
 
@@ -225,6 +244,15 @@ class Database {
     return jwt.sign(payload, secret, { expiresIn: '24h', algorithm: 'HS256' });
   }
 
+  // Short-lived, single-purpose token (MFA confirmation etc.). Always carries
+  // a `type`, so it can never be used as a login token.
+  static generatePurposeJWT(type, payload, expiresIn = '10m') {
+    const jwt = require('jsonwebtoken');
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('JWT_SECRET is not configured');
+    return jwt.sign({ ...payload, type }, secret, { expiresIn, algorithm: 'HS256' });
+  }
+
   static verifyJWT(token) {
     const jwt = require('jsonwebtoken');
     const currentSecret = process.env.JWT_SECRET;
@@ -253,5 +281,20 @@ class Database {
     }
   }
 }
+
+// Copy only the listed fields from a request body (undefined ones are skipped).
+Database.pick = function pick(source, allowed) {
+  const out = {};
+  if (!source || typeof source !== 'object') return out;
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined) {
+      const v = source[key];
+      // Objects/arrays would be expanded by the driver; only plain values pass
+      if (v !== null && typeof v === 'object' && !(v instanceof Date)) continue;
+      out[key] = v;
+    }
+  }
+  return out;
+};
 
 module.exports = Database;

@@ -2,6 +2,7 @@
 // Replaces Supabase Edge Function
 
 const express = require("express");
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require("../config");
 const { authenticateToken } = require("../middleware/auth");
 const EmailTemplate = require("../services/EmailTemplate");
@@ -12,6 +13,16 @@ const ArchiveService = require('../services/ArchiveService');
 const OTPService = require('../services/OTPService');
 
 const router = express.Router();
+
+// Only accept image/proof links that point at a file we stored ourselves
+// (e.g. /uploads/proofs/1730000000000-ab12.jpg). Anything else is dropped.
+function safeUploadUrl(url, subdir) {
+  if (typeof url !== 'string') return null;
+  const m = url.match(/^\/uploads\/([a-z]+)\/([A-Za-z0-9][A-Za-z0-9._-]{0,200})$/);
+  if (!m || m[1] !== subdir) return null;
+  return url;
+}
+
 
 // GET /api/device-management/categories - List available device categories from DB (fallback to service)
 router.get('/categories', authenticateToken, async (req, res) => {
@@ -171,7 +182,8 @@ router.get("/", authenticateToken, async (req, res) => {
     const offset = (page - 1) * limit;
     const statusFilter = req.query.status;
 
-    let whereClause = 'user_id = ?';
+    // Removed (archived) items have deleted_at set and must not show up
+    let whereClause = 'user_id = ? AND deleted_at IS NULL';
     let whereParams = [userId];
 
     if (statusFilter) {
@@ -208,7 +220,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
     const device = await Database.selectOne(
       "devices",
       "*",
-      "id = ? AND user_id = ?",
+      "id = ? AND user_id = ? AND deleted_at IS NULL",
       [deviceId, userId]
     );
 
@@ -228,9 +240,9 @@ router.post("/", authenticateToken, async (req, res) => {
   try {
     const { 
       category = 'others',
-      imei, 
-      serial, 
-      vin,
+      imei: _rawImei,
+      serial: _rawSerial,
+      vin: _rawVin,
       brand, 
       model, 
       color, 
@@ -255,32 +267,26 @@ router.post("/", authenticateToken, async (req, res) => {
     
     const userId = req.user.id;
 
-    // Normalize category using DB labels/keys
-    let normalizedCategory = category;
-    try {
-      const catRow = await Database.selectOne('device_categories', 'category_key, label', '(LOWER(label) = LOWER(?) OR LOWER(category_key) = LOWER(?)) AND active = TRUE', [category, category]);
-      if (catRow) {
-        normalizedCategory = catRow.category_key;
-      } else {
-        // Simple mapping fallback
-        const map = {
-          'phone': 'mobile_phone',
-          'mobile': 'mobile_phone',
-          'vehicle': 'vehicle',
-          'car': 'vehicle',
-          'computers': 'computer',
-          'computer': 'computer',
-          'smart watch': 'smart_watch',
-          'smartwatch': 'smart_watch',
-          'others': 'others'
-        };
-        const key = (category || '').toString().trim().toLowerCase();
-        normalizedCategory = map[key] || 'others';
-      }
-    } catch (catErr) {
-      console.warn('Category normalization failed, defaulting:', catErr);
-      normalizedCategory = 'others';
+    // Map the app's category (smartphone, laptop, motorcycle ...) to a stored
+    // category so the right identifier is required (IMEI for phones, serial
+    // for laptops and electronics, VIN for vehicles). Before this, most items
+    // fell through to "others" and phones could be saved without an IMEI.
+    let normalizedCategory = DeviceCategoryService.normalizeCategory(category);
+    if (normalizedCategory === 'others') {
+      try {
+        const catRow = await Database.selectOne('device_categories', 'category_key', '(LOWER(label) = LOWER(?) OR LOWER(category_key) = LOWER(?)) AND active = TRUE', [category, category]);
+        if (catRow && DeviceCategoryService.getCategoryConfig(catRow.category_key)) normalizedCategory = catRow.category_key;
+      } catch (_) { /* keep "others" */ }
     }
+
+    // Identifiers are stored trimmed and upper-case so the same item can't be
+    // registered twice with different spacing or letter case
+    const clean = (v) => (typeof v === 'string' ? v.trim().replace(/\s+/g, '').toUpperCase() : v) || null;
+    req.body.imei = clean(req.body.imei);
+    req.body.serial = clean(req.body.serial);
+    req.body.vin = clean(req.body.vin);
+    req.body.certificateNumber = clean(req.body.certificateNumber);
+    const imei = req.body.imei, serial = req.body.serial, vin = req.body.vin;
 
     // Validate required fields
     if (!brand || !model) {
@@ -339,8 +345,11 @@ router.post("/", authenticateToken, async (req, res) => {
         if (existing.status === 'released') {
           existingId = existing.id;
         } else {
-          return res.status(409).json({ 
-            error: 'This device is already registered by another user' 
+          // Point the person to the ownership claim flow instead of a dead end
+          return res.status(409).json({
+            error: 'This item is already registered to another account',
+            canClaim: true,
+            message: 'If it is yours, you can file an ownership claim with proof. Our team will review both sides.'
           });
         }
       }
@@ -354,15 +363,18 @@ router.post("/", authenticateToken, async (req, res) => {
       brand,
       model,
       color: color || null,
-      device_image_url: device_image_url || null,
-      proof_url: proof_url || null,
+      device_image_url: safeUploadUrl(device_image_url, 'devices'),
+      proof_url: safeUploadUrl(proof_url, 'proofs'),
       status: "unverified",
       released_at: null,
+      ownership_level: 'registered',
+      ownership_verified_at: null,
+      ownership_verified_by: null,
       // explicit category fields
       imei2: imei2 || null,
       network_carrier: networkCarrier || null,
       operating_system: operatingSystem || null,
-      storage_capacity: storageCapacity || null,
+      storage_capacity: storageCapacity || req.body.storage || null,
       mac_address: macAddress || null,
       processor_type: processorType || null,
       ram_size: ramSize || null,
@@ -374,8 +386,8 @@ router.post("/", authenticateToken, async (req, res) => {
       registration_state: registrationState || null,
       description: additionalData.description || null,
       notes: additionalData.notes || null,
-      estimated_value: additionalData.estimatedValue || null,
-      certificate_number: additionalData.certificateNumber || null,
+      estimated_value: estimatedValue ? Number(estimatedValue) || null : null,
+      certificate_number: req.body.certificateNumber || null,
       updated_at: new Date(),
     };
 
@@ -391,6 +403,27 @@ router.post("/", authenticateToken, async (req, res) => {
       await Database.insert("devices", deviceData);
     }
 
+    // A proof uploaded with the registration goes straight into the review queue
+    if (deviceData.proof_url) {
+      try {
+        const ProofTypes = require('../utils/proof-types');
+        const proofType = ProofTypes.isAllowed(normalizedCategory, req.body.proof_type) ? req.body.proof_type : 'other';
+        await Database.insert('ownership_proofs', {
+          id: Database.generateUUID(),
+          device_id: deviceId,
+          user_id: userId,
+          proof_type: proofType,
+          file_url: deviceData.proof_url,
+          note: proofType === 'other' ? 'Uploaded when the item was registered' : null,
+          status: 'pending',
+          created_at: new Date(),
+        });
+        await Database.update('devices', { ownership_level: 'proof_submitted' }, 'id = ?', [deviceId]);
+      } catch (proofErr) {
+        console.warn('Could not queue registration proof for review:', proofErr.message);
+      }
+    }
+
     // Generate a link token and send verification email to the owner
     try {
       const verifyToken = Database.generateJWT({
@@ -402,8 +435,8 @@ router.post("/", authenticateToken, async (req, res) => {
       const verifyLink = `${FRONTEND_URL}/verify-device?token=${verifyToken}`;
       const user = await Database.selectOne("users", "name, email, first_name, middle_name, last_name", "id = ?", [userId]);
       const emailContent = `
-        <p>Hello ${getDisplayName(user)},</p>
-        <p>We received a registration for your device: <strong>${brand} ${model}</strong>.</p>
+        <p>Hello ${escapeHtml(getDisplayName(user))},</p>
+        <p>We received a registration for your device: <strong>${escapeHtml(brand)} ${escapeHtml(model)}</strong>.</p>
         <p>To confirm you are the owner, please verify this device.</p>
         <p>If the button doesn't work, copy and paste this link into your browser:</p>
         <p><a href="${verifyLink}">${verifyLink}</a></p>
@@ -451,7 +484,20 @@ router.put("/:id", authenticateToken, async (req, res) => {
   try {
     const deviceId = req.params.id;
     const userId = req.user.id;
-    const updateData = req.body;
+    // Owners may only edit descriptive fields. Identity (IMEI/serial/VIN),
+    // owner and status change only through registration, verification,
+    // reports and transfers.
+    const updateData = Database.pick(req.body, [
+      'brand', 'model', 'color', 'description', 'notes', 'network_carrier', 'operating_system',
+      'storage_capacity', 'processor_type', 'ram_size', 'license_plate',
+      'registration_state', 'estimated_value', 'certificate_number',
+    ]);
+    // The edit form sends camelCase / short names for two fields
+    if (req.body.estimatedValue !== undefined) updateData.estimated_value = req.body.estimatedValue;
+    if (req.body.storage !== undefined) updateData.storage_capacity = req.body.storage;
+    if (req.body.device_image_url !== undefined) {
+      updateData.device_image_url = safeUploadUrl(req.body.device_image_url, 'devices');
+    }
 
     // Verify ownership
     const existing = await Database.selectOne("devices", "user_id", "id = ?", [
@@ -462,6 +508,10 @@ router.put("/:id", authenticateToken, async (req, res) => {
       return res.status(404).json({
         error: "Device not found or unauthorized",
       });
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ error: "No editable fields supplied" });
     }
 
     // Update device
@@ -492,6 +542,13 @@ router.post("/:id/release", authenticateToken, async (req, res) => {
     }
     if (device.status === 'released') {
       return res.status(400).json({ error: 'Device is already released' });
+    }
+    if (device.status === 'pending_transfer') {
+      return res.status(409).json({ error: 'Cancel the pending transfer before releasing this item' });
+    }
+    const own = await Database.selectOne('devices', 'ownership_level', 'id = ?', [deviceId]);
+    if (own && own.ownership_level === 'disputed') {
+      return res.status(409).json({ error: 'This item has an open ownership claim and cannot be released until it is resolved' });
     }
 
     await Database.update("devices",
@@ -556,6 +613,10 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "Device not found" });
     }
 
+    if (['stolen', 'lost', 'pending_transfer', 'released'].includes(device.status)) {
+      return res.status(409).json({ error: `This device is currently ${device.status.replace('_', ' ')} and cannot be verified now.` });
+    }
+
     // Verify OTP
     const otpResult = await OTPService.verifyOTP(
       userId,
@@ -587,11 +648,11 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
 
       const emailContent = `
         <h2>Verification Successful</h2>
-        <p>Hello ${getDisplayName(user)},</p>
+        <p>Hello ${escapeHtml(getDisplayName(user))},</p>
         <p>Your device has been successfully verified:</p>
 
         <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
-          <h3>${device.brand} ${device.model}</h3>
+          <h3>${escapeHtml(device.brand)} ${escapeHtml(device.model)}</h3>
           <p><strong>Status:</strong> <span style="color: #10b981;">Verified ✅</span></p>
           <p><strong>Verified on:</strong> ${new Date().toLocaleString()}</p>
         </div>
@@ -679,6 +740,11 @@ router.post('/verify-device-link', async (req, res) => {
     }
 
     // Idempotent: if already verified, return success without error
+    // An old link must never clear a theft/loss report or a pending transfer
+    if (['stolen', 'lost', 'pending_transfer', 'released'].includes(device.status)) {
+      return res.status(409).json({ error: `This device is currently ${device.status.replace('_', ' ')} and cannot be verified with this link.` });
+    }
+
     if (device.status === 'verified') {
       return res.json({
         success: true,
@@ -699,10 +765,10 @@ router.post('/verify-device-link', async (req, res) => {
     const user = await Database.selectOne('users', 'name, email, first_name, middle_name, last_name', 'id = ?', [userId]);
       const emailContent = `
         <h2>Verification Successful</h2>
-        <p>Hello ${getDisplayName(user)},</p>
+        <p>Hello ${escapeHtml(getDisplayName(user))},</p>
         <p>Your device has been successfully verified:</p>
         <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
-          <h3>${device.brand} ${device.model}</h3>
+          <h3>${escapeHtml(device.brand)} ${escapeHtml(device.model)}</h3>
           <p><strong>Status:</strong> <span style="color: #10b981;">Verified ✅</span></p>
           <p><strong>Verified on:</strong> ${new Date().toLocaleString()}</p>
         </div>

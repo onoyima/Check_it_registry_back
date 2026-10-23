@@ -57,8 +57,9 @@ router.post('/initiate', authenticateToken, async (req, res) => {
       return res.json({ success: true, requiresPayment: false, message: 'No fee required' });
     }
 
-    // Get active payment provider
-    const provider = await RevenueService.getActivePaymentProvider();
+    // Paystack is the only working provider. The "Monify" integration pointed
+    // at a non-existent API and is disabled until it is rebuilt on Monnify.
+    const provider = 'paystack';
 
     // Create invoice
     const reference = provider === 'monify'
@@ -90,6 +91,7 @@ router.post('/initiate', authenticateToken, async (req, res) => {
         amount,
         reference,
         metadata: { invoiceId, purpose, userId, ...metadata },
+        callbackUrl: `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/payment/callback?kind=fee`,
       });
       paymentData = {
         provider: 'paystack',

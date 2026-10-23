@@ -65,3 +65,6 @@ START_PROJECT.md
 
 
 PROJECT_FEATURE_AUDIT.md
+
+# System test state (holds test tokens)
+tests/system/.state.json

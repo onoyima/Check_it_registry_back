@@ -30,11 +30,37 @@ class EscrowService {
     return { escrowId, platformFee, sellerAmount, feePercent };
   }
 
+  // Move the sold device to the buyer in the registry and log the change.
+  static async transferDeviceToBuyer(listingId, buyerId) {
+    const listing = await Database.selectOne('marketplace_listings', 'device_id, seller_id', 'id = ?', [listingId]);
+    if (!listing) return;
+    const before = await Database.selectOne('devices', 'ownership_level', 'id = ?', [listing.device_id]);
+    const moved = await Database.query(
+      'UPDATE devices SET user_id = ?, updated_at = NOW() WHERE id = ? AND user_id = ?',
+      [buyerId, listing.device_id, listing.seller_id]
+    );
+    if (moved && moved.affectedRows === 1) {
+      await require('./OwnershipProofService').carryOverLevel(listing.device_id, before?.ownership_level);
+    }
+    await Database.logAudit(buyerId, 'DEVICE_SOLD_VIA_MARKETPLACE', 'devices', listing.device_id,
+      { user_id: listing.seller_id }, { user_id: buyerId }).catch(() => {});
+  }
+
   static async confirmDelivery(escrowId, userId) {
     const escrow = await Database.selectOne('escrow_transactions', '*', 'id = ?', [escrowId]);
     if (!escrow) throw new Error('Escrow transaction not found');
     if (escrow.buyer_id !== userId) throw new Error('Only the buyer can confirm delivery');
     if (escrow.status !== 'held') throw new Error(`Cannot confirm delivery. Escrow is ${escrow.status}`);
+
+    // Claim the escrow atomically so a double click can't pay the seller twice
+    const claim = await Database.query(
+      "UPDATE escrow_transactions SET status = 'released', released_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'held'",
+      [escrowId]
+    );
+    if (!claim || claim.affectedRows !== 1) throw new Error('This order has already been confirmed');
+
+    // The buyer now owns the device in the registry
+    await this.transferDeviceToBuyer(escrow.listing_id, userId);
 
     const deliveryId = Database.generateUUID();
     await Database.insert('delivery_confirmations', {
@@ -46,12 +72,6 @@ class EscrowService {
       status: 'confirmed',
       confirmed_at: new Date(),
     });
-
-    await Database.update('escrow_transactions', {
-      status: 'released',
-      released_at: new Date(),
-      updated_at: new Date(),
-    }, 'id = ?', [escrowId]);
 
     // Create seller payout transaction
     const payoutTxId = Database.generateUUID();
@@ -146,6 +166,17 @@ class EscrowService {
     const escrow = await Database.selectOne('escrow_transactions', '*', 'id = ?', [escrowId]);
     if (!escrow) throw new Error('Escrow transaction not found');
     if (escrow.status !== 'disputed') throw new Error(`Cannot resolve. Escrow is ${escrow.status}`);
+    if (!['release', 'refund'].includes(action)) throw new Error('Action must be release or refund');
+
+    // Claim the dispute atomically so two admins can't both resolve it
+    const claim = await Database.query(
+      "UPDATE escrow_transactions SET status = ?, updated_at = NOW() WHERE id = ? AND status = 'disputed'",
+      [action === 'release' ? 'released' : 'refunded', escrowId]
+    );
+    if (!claim || claim.affectedRows !== 1) throw new Error('This dispute has already been resolved');
+    if (action === 'release') {
+      await this.transferDeviceToBuyer(escrow.listing_id, escrow.buyer_id);
+    }
 
     if (action === 'release') {
       await Database.update('delivery_confirmations', {

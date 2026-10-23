@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const { escapeHtml } = require('../utils/escape-html');
 const crypto = require('crypto');
 const Database = require('../config');
 const NotificationService = require('./NotificationService');
@@ -40,6 +41,13 @@ class OTPService {
       // Clean up expired OTPs for this user and type
       await connection.execute(
         'DELETE FROM otps WHERE user_id = ? AND otp_type = ? AND expires_at < UTC_TIMESTAMP()',
+        [userId, otpType]
+      );
+
+      // A new code replaces any earlier unused code of the same kind, so
+      // repeated "resend" requests don't add extra valid codes to guess.
+      await connection.execute(
+        'UPDATE otps SET used_at = UTC_TIMESTAMP() WHERE user_id = ? AND otp_type = ? AND used_at IS NULL',
         [userId, otpType]
       );
 
@@ -104,7 +112,7 @@ class OTPService {
           `SELECT id, attempts, max_attempts, expires_at, used_at 
            FROM otps 
            WHERE user_id = ? AND otp_code = ? AND otp_type = ? 
-           AND (reference_id = ? OR reference_id IS NULL)
+           AND reference_id <=> ?
            AND expires_at >= UTC_TIMESTAMP() AND used_at IS NULL`,
           [userId, otpCode, otpType, referenceId]
         );
@@ -114,7 +122,7 @@ class OTPService {
           await connection.execute(
             `UPDATE otps SET attempts = attempts + 1 
              WHERE user_id = ? AND otp_type = ? 
-             AND (reference_id = ? OR reference_id IS NULL)
+             AND reference_id <=> ?
              AND expires_at >= UTC_TIMESTAMP() AND used_at IS NULL`,
             [userId, otpType, referenceId]
           );
@@ -174,7 +182,7 @@ class OTPService {
         subject: 'Verify Your Email',
         title: 'Email Verification',
         content: `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>Your email verification code is:</p>
           <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
             <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
@@ -187,7 +195,7 @@ class OTPService {
         subject: 'Device Transfer Verification',
         title: 'Device Transfer Verification',
         content: `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>Your device transfer verification code is:</p>
           <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
             <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
@@ -202,7 +210,7 @@ class OTPService {
         subject: 'Password Reset Code',
         title: 'Password Reset',
         content: `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>Your password reset code is:</p>
           <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
             <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
@@ -215,7 +223,7 @@ class OTPService {
         subject: 'Two-Factor Authentication Code',
         title: 'Two-Factor Authentication',
         content: `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>Your 2FA verification code is:</p>
           <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
             <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
@@ -227,7 +235,7 @@ class OTPService {
         subject: 'New Device Login Verification',
         title: 'New Device Login Detected',
         content: `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>We detected a login from a new device. To complete your login, please enter this verification code:</p>
           <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
             <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>
@@ -246,7 +254,7 @@ class OTPService {
         subject: 'Device Registration Verification',
         title: 'Verify Your Device Registration',
         content: `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>Please verify your device registration by entering this verification code:</p>
           <div style="background: #EEF2FF; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
             <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #2563EB; font-family: 'Courier New', monospace;">${otpCode}</span>

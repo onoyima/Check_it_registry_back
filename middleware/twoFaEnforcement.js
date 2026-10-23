@@ -30,11 +30,10 @@ const requireMFA = async (req, res, next) => {
       });
     }
 
-    // Verify MFA token from header (set after successful MFA verification via security-routes)
-    const mfaVerified = req.headers['x-mfa-verified'];
+    // Verify the MFA token issued by POST /api/security/mfa/verify: a signed,
+    // 10-minute token for this user. Its signature is checked, not just decoded.
     const mfaToken = req.headers['x-mfa-token'];
-
-    if (!mfaVerified || !mfaToken) {
+    if (!mfaToken) {
       return res.status(403).json({
         error: 'MFA verification required',
         requiresAction: 'mfa_verify',
@@ -42,23 +41,17 @@ const requireMFA = async (req, res, next) => {
       });
     }
 
-    // Validate the MFA token is not expired (10 minute window)
+    let payload;
     try {
-      const payload = JSON.parse(Buffer.from(mfaToken.split('.')[1], 'base64').toString());
-      if (payload.exp && payload.exp * 1000 < Date.now()) {
-        return res.status(403).json({
-          error: 'MFA token expired',
-          requiresAction: 'mfa_verify',
-          message: 'MFA token has expired. Please re-verify.'
-        });
-      }
-      if (payload.type !== 'mfa_token' || payload.userId !== req.user.id) {
-        return res.status(403).json({
-          error: 'Invalid MFA token',
-          requiresAction: 'mfa_verify'
-        });
-      }
+      payload = Database.verifyJWT(mfaToken);
     } catch (e) {
+      return res.status(403).json({
+        error: 'MFA token expired or invalid',
+        requiresAction: 'mfa_verify',
+        message: 'Please verify again.'
+      });
+    }
+    if (payload.type !== 'mfa_token' || payload.userId !== req.user.id) {
       return res.status(403).json({
         error: 'Invalid MFA token',
         requiresAction: 'mfa_verify'

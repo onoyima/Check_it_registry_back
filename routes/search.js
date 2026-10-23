@@ -4,9 +4,12 @@ const Database = require('../config');
 const PIIEncryptionService = require('../services/PIIEncryptionService');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
-router.get('/users', authenticateToken, async (req, res) => {
+// Admin-only: lists accounts with contact details
+router.get('/users', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
-    const { query, role, region, limit = 20, page = 1 } = req.query;
+    const { query, role, region } = req.query;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     let sql = 'SELECT id, name, email, role, region, created_at FROM users WHERE 1=1';
     const params = [];
 
@@ -27,10 +30,10 @@ router.get('/users', authenticateToken, async (req, res) => {
     const total = countResult[0]?.total || 0;
     const offset = (page - 1) * limit;
     sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), offset);
+    params.push(limit, offset);
 
     const users = await Database.query(sql, params);
-    res.json({ success: true, users, pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / limit) } });
+    res.json({ success: true, users, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (error) {
     console.error('Search error:', error);
     res.status(500).json({ error: 'Search failed' });

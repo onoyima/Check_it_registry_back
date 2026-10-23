@@ -25,21 +25,40 @@ class ErrorStore {
     return entry;
   }
 
-  blockIp(ip, reason) {
+  // Block an IP for a limited time (default 15 minutes)
+  blockIp(ip, reason, minutes = 15) {
     if (!ip) return;
+    const now = Date.now();
     const existing = this.blockedIps.get(ip);
+    const until = new Date(now + minutes * 60 * 1000).toISOString();
     if (existing) {
       existing.count++;
-      existing.lastSeen = new Date().toISOString();
+      existing.lastSeen = new Date(now).toISOString();
+      existing.until = until;
     } else {
       this.blockedIps.set(ip, {
         ip,
         reason: reason || 'Blocked by security policy',
         count: 1,
-        firstSeen: new Date().toISOString(),
-        lastSeen: new Date().toISOString(),
+        firstSeen: new Date(now).toISOString(),
+        lastSeen: new Date(now).toISOString(),
+        until,
       });
     }
+  }
+
+  isBlocked(ip) {
+    const entry = this.blockedIps.get(ip);
+    if (!entry) return false;
+    if (entry.until && Date.parse(entry.until) <= Date.now()) {
+      this.blockedIps.delete(ip);
+      return false;
+    }
+    return true;
+  }
+
+  unblockIp(ip) {
+    this.blockedIps.delete(ip);
   }
 
   getErrors(limit = 50) {
@@ -47,6 +66,7 @@ class ErrorStore {
   }
 
   getBlockedIps() {
+    for (const ip of Array.from(this.blockedIps.keys())) this.isBlocked(ip); // drop expired
     return Array.from(this.blockedIps.values());
   }
 
@@ -75,10 +95,10 @@ class ErrorStore {
         <tr>
           <td>#${e.id}</td>
           <td>${e.statusCode}</td>
-          <td>${e.method || '-'}</td>
-          <td>${e.path || '-'}</td>
+          <td>${this._escape(e.method || '-')}</td>
+          <td>${this._escape(e.path || '-')}</td>
           <td style="max-width:300px;word-break:break-word;">${this._escape(e.message)}</td>
-          <td>${e.ip || '-'}</td>
+          <td>${this._escape(e.ip || '-')}</td>
           <td title="${this._escape(e.stack || '')}">${formatTime(e.timestamp)}</td>
         </tr>`).join('')
       : '<tr><td colspan="7" style="text-align:center;color:#6b7280;">No errors captured yet</td></tr>';

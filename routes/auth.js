@@ -10,40 +10,21 @@ const NotificationService = require('../services/NotificationService');
 const EmailTemplate = require('../services/EmailTemplate');
 const { getDisplayName, buildUserNameFields } = require('../utils/user-helpers');
 const { otpLimiter } = require('../middleware/limiters');
+const { authenticateToken, issueLoginToken, revokeUserTokens } = require('../middleware/auth');
+const { escapeHtml } = require('../utils/escape-html');
+const { checkPassword } = require('../utils/password-policy');
 
 const router = express.Router();
 
-// Middleware to authenticate JWT tokens
-const authenticateToken = async (req, res, next) => {
+// Suspension / deletion flags (columns added by migration 023; tolerate old DBs)
+async function getAccountState(userId) {
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-    if (!token) {
-      return res.status(401).json({ error: 'Access token required' });
-    }
-
-    const decoded = Database.verifyJWT(token);
-    
-    // Get user from database
-    const user = await Database.selectOne(
-      'users',
-      'id, name, first_name, middle_name, last_name, email, role, region',
-      'id = ?',
-      [decoded.id]
-    );
-
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error('Auth error:', error);
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    const row = await Database.selectOne('users', 'suspended_at, deleted_at', 'id = ?', [userId]);
+    return { suspended: !!(row && row.suspended_at), deleted: !!(row && row.deleted_at) };
+  } catch (_) {
+    return { suspended: false, deleted: false };
   }
-};
+}
 
 // POST /api/auth/register - User registration (supports JSON and multipart for profile image)
 router.post('/register', async (req, res) => {
@@ -75,10 +56,9 @@ router.post('/register', async (req, res) => {
         });
       }
 
-      if (password.length < 6) {
-        return res.status(400).json({ 
-          error: 'Password must be at least 6 characters long' 
-        });
+      const passwordProblem = checkPassword(password);
+      if (passwordProblem) {
+        return res.status(400).json({ error: passwordProblem });
       }
 
       if (phone && phone.length < 10) {
@@ -117,7 +97,10 @@ router.post('/register', async (req, res) => {
         password_hash: passwordHash,
         phone: phone?.trim() || null,
         region: region?.trim() || 'default',
-        role: ['user', 'admin', 'lea', 'business'].includes(role) ? role : 'user',
+        // Never trust a role from the request. Admin and police accounts are
+        // created by an admin; business accounts start as 'business' only
+        // through the business sign-up form and still need verification.
+        role: role === 'business' ? 'business' : 'user',
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -160,7 +143,7 @@ router.post('/register', async (req, res) => {
       }
 
       // Generate JWT
-      const token = Database.generateJWT({ id: userId, email: userData.email, role: userData.role });
+      const token = await issueLoginToken({ id: userId, email: userData.email, role: userData.role });
 
       // Send email verification
       try {
@@ -173,7 +156,7 @@ router.post('/register', async (req, res) => {
       // Send welcome email
       try {
         const welcomeContent = `
-          <p>Hello <strong>${userData.name || displayName}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(userData.name || displayName)}</strong>,</p>
           <p>Welcome to <strong>Prove Ownership</strong>, Nigeria's premier device registry and recovery system! We're excited to help you protect your valuable devices.</p>
           <div style="background: #EFF6FF; border-left: 4px solid #2563EB; padding: 20px; border-radius: 8px; margin: 25px 0;">
             <h3 style="color: #1E40AF; margin: 0 0 12px; font-size: 16px;">Get Started in 3 Easy Steps</h3>
@@ -285,11 +268,7 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    if (password.length < 6) {
-      return res.status(400).json({ 
-        error: 'Password must be at least 6 characters' 
-      });
-    }
+
 
     // Get user with additional security fields
     const user = await Database.selectOne(
@@ -334,6 +313,17 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    // Block suspended or deleted accounts
+    const accountState = await getAccountState(user.id);
+    if (accountState.deleted) {
+      return res.status(401).json({
+        error: 'Invalid email or password. Please check your credentials and try again.'
+      });
+    }
+    if (accountState.suspended) {
+      return res.status(403).json({ error: 'Your account is suspended. Please contact support.' });
+    }
+
     // Check email verification
     const emailVerificationOptional = process.env.EMAIL_VERIFICATION_REQUIRED === 'false';
     if (!user.verified_at && !emailVerificationOptional) {
@@ -351,11 +341,16 @@ router.post('/login', async (req, res) => {
     }
 
     // Check device trust status
-    const enableOtp = process.env.ENABLE_EMAIL_OTP !== 'false';
+    // Admin and police accounts always need the emailed code (two-factor
+    // sign-in on every login); other users only on a new browser.
+    const privileged = ['admin', 'super_admin', 'lea'].includes(user.role);
+    const enableOtp = privileged || process.env.ENABLE_EMAIL_OTP !== 'false';
     const deviceFingerprint = DeviceSecurityService.generateDeviceFingerprint(req);
     
     // Only check trust if OTP is enabled
-    const isDeviceTrusted = enableOtp ? await DeviceSecurityService.isDeviceTrusted(user.id, deviceFingerprint) : true;
+    const isDeviceTrusted = privileged
+      ? false
+      : (enableOtp ? await DeviceSecurityService.isDeviceTrusted(user.id, deviceFingerprint) : true);
     
     // If device is not trusted and OTP is enabled, require OTP verification
     if (!isDeviceTrusted && enableOtp) {
@@ -398,11 +393,7 @@ router.post('/login', async (req, res) => {
     );
 
     // Generate JWT
-    const token = Database.generateJWT({ 
-      id: user.id, 
-      email: user.email, 
-      role: user.role 
-    });
+    const token = await issueLoginToken(user);
 
     // Log successful login
     await Database.insert('audit_logs', {
@@ -502,9 +493,13 @@ router.put('/profile', authenticateToken, async (req, res) => {
     const updateData = {
       ...nameFields,
       phone: phone ? phone.trim() : null,
-      region: region ? region.trim() : null,
       updated_at: new Date()
     };
+    // A police officer's region decides which cases they can see, so only an
+    // admin may change it (PUT /api/user-management/users/:id/region).
+    if (req.user.role !== 'lea' && region !== undefined) {
+      updateData.region = region ? String(region).trim() : null;
+    }
 
     await Database.update('users', updateData, 'id = ?', [userId]);
 
@@ -540,7 +535,10 @@ router.put('/profile', authenticateToken, async (req, res) => {
 });
 
 // POST /api/auth/logout - Logout (client-side token removal)
-router.post('/logout', (req, res) => {
+// Logging out ends every login token this account holds (all browsers),
+// so a copied or stolen token stops working at once.
+router.post('/logout', authenticateToken, async (req, res) => {
+  await revokeUserTokens(req.user.id);
   res.json({ message: 'Logout successful' });
 });
 
@@ -674,15 +672,9 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Please enter a valid email address' });
     }
 
-    if (new_password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
-    }
-
-    // Validate password strength
-    if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(new_password)) {
-      return res.status(400).json({ 
-        error: 'Password must contain at least one lowercase letter, one uppercase letter, and one number' 
-      });
+    const passwordProblem = checkPassword(new_password);
+    if (passwordProblem) {
+      return res.status(400).json({ error: passwordProblem });
     }
 
     // Find user
@@ -723,11 +715,12 @@ router.post('/reset-password', async (req, res) => {
       updated_at: new Date()
     }, 'id = ?', [user.id]);
 
-    // Invalidate all existing sessions for security
+    // Invalidate all existing sessions and login tokens for security
     await Database.query(
       'UPDATE user_sessions SET is_active = false WHERE user_id = ?',
       [user.id]
     );
+    await revokeUserTokens(user.id);
 
     // Log successful password reset
     await Database.insert('audit_logs', {
@@ -747,7 +740,7 @@ router.post('/reset-password', async (req, res) => {
     // Send password reset confirmation email
     try {
       const content = `
-        <p>Hello <strong>${getDisplayName(user)}</strong>,</p>
+        <p>Hello <strong>${escapeHtml(getDisplayName(user))}</strong>,</p>
         <p>Your password has been successfully reset.</p>
         <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
           <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
@@ -836,6 +829,11 @@ router.post('/verify-device', otpLimiter, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const accountState = await getAccountState(user.id);
+    if (accountState.deleted || accountState.suspended) {
+      return res.status(403).json({ error: 'This account cannot sign in. Please contact support.' });
+    }
+
     // Trust the device by default after successful OTP (skip prompts within 90 days)
     // If client explicitly sets remember_device === false, skip trusting.
     const shouldTrust = remember_device !== false;
@@ -871,11 +869,7 @@ router.post('/verify-device', otpLimiter, async (req, res) => {
     );
 
     // Generate JWT
-    const token = Database.generateJWT({ 
-      id: user.id, 
-      email: user.email, 
-      role: user.role 
-    });
+    const token = await issueLoginToken(user);
 
     // Log successful device verification
     await Database.insert('audit_logs', {

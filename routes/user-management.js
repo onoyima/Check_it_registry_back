@@ -1,7 +1,8 @@
 // User Management Routes - Advanced Admin Features
 const express = require('express');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
-const { authenticateToken, requireRole } = require('../middleware/auth');
+const { authenticateToken, requireRole, revokeUserTokens } = require('../middleware/auth');
 const NotificationService = require('../services/NotificationService');
 const EmailTemplate = require('../services/EmailTemplate');
 const PIIEncryptionService = require('../services/PIIEncryptionService');
@@ -248,7 +249,7 @@ router.put('/users/:userId/role', async (req, res) => {
       user.email,
       'Account Role Updated',
       `
-        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
         <p>Your account role has been updated by an administrator.</p>
         <div style="background: #F3F4F6; border-radius: 8px; padding: 12px 16px; margin: 15px 0;">
           <p style="margin: 5px 0;"><strong>Previous Role:</strong> ${oldRole}</p>
@@ -342,8 +343,19 @@ router.put('/users/:userId/suspend', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // For now, we'll use a custom field or handle suspension logic
-    // In a full implementation, you might add a 'suspended' column to users table
+    if (userId === req.user.id) {
+      return res.status(400).json({ error: 'You cannot suspend your own account' });
+    }
+
+    // Store the suspension and end every active login of that account
+    await Database.update('users', {
+      suspended_at: suspended ? new Date() : null,
+      suspension_reason: suspended ? (reason ? String(reason).slice(0, 500) : null) : null,
+      updated_at: new Date(),
+    }, 'id = ?', [userId]);
+    if (suspended) {
+      await revokeUserTokens(userId);
+    }
     
     // Log the suspension action
     await Database.logAudit(
@@ -363,12 +375,12 @@ router.put('/users/:userId/suspend', async (req, res) => {
       user.email,
       suspended ? 'Account Suspended' : 'Account Reactivated',
       suspended ? `
-        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
         <p>Your account has been <strong style="color: #DC2626;">suspended</strong> by an administrator.</p>
         ${reason ? `<div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 12px 16px; border-radius: 8px; margin: 15px 0;"><p style="margin: 0; color: #991B1B;"><strong>Reason:</strong> ${reason}</p></div>` : ''}
         <p>If you believe this is an error, please contact support.</p>
       ` : `
-        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
         <p>Your account has been <strong style="color: #16A34A;">reactivated</strong> and you can now access the system normally.</p>
         ${reason ? `<div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 12px 16px; border-radius: 8px; margin: 15px 0;"><p style="margin: 0; color: #166534;"><strong>Note:</strong> ${reason}</p></div>` : ''}
       `,
@@ -437,7 +449,7 @@ router.post('/users/:userId/reset-password', async (req, res) => {
         user.email,
         'Password Reset by Administrator',
         `
-          <p>Hello <strong>${user.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(user.name)}</strong>,</p>
           <p>Your password has been reset by an administrator.</p>
           <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
             <p style="margin: 0; color: #92400E; font-size: 14px;"><strong>Temporary Password:</strong> <code style="background: #FFF; padding: 4px 8px; border-radius: 4px; font-size: 14px;">${new_password}</code></p>

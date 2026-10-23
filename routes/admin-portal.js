@@ -1,5 +1,6 @@
 // Admin Portal Routes - MySQL Version
 const express = require('express');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
@@ -366,12 +367,24 @@ router.post('/verify-device/:id', async (req, res) => {
     const verifiedAt = approved ? new Date() : null;
     const verifiedBy = approved ? adminId : null;
 
+    const ownershipUpdate = {};
+    if (approved && device.ownership_level !== 'disputed') {
+      // An admin check of the registration also verifies the owner
+      Object.assign(ownershipUpdate, { ownership_level: 'verified_owner', ownership_verified_at: new Date(), ownership_verified_by: adminId });
+    }
     await Database.update('devices', {
       status: newStatus,
       verified_at: verifiedAt,
       verified_by: verifiedBy,
+      ...ownershipUpdate,
       updated_at: new Date()
     }, 'id = ?', [deviceId]);
+    if (ownershipUpdate.ownership_level) {
+      await Database.query(
+        "UPDATE ownership_proofs SET status = 'approved', reviewed_by = ?, reviewed_at = NOW(), review_note = 'Approved with the item registration' WHERE device_id = ? AND user_id = ? AND status = 'pending' AND dispute_id IS NULL",
+        [adminId, deviceId, device.user_id]
+      ).catch(() => {});
+    }
 
     // Log audit
     await Database.logAudit(
@@ -438,10 +451,10 @@ router.post('/resend-device-verification/:id', async (req, res) => {
 
     // Send email
     const content = `
-      <p>Hello <strong>${getDisplayName(owner)}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(getDisplayName(owner))}</strong>,</p>
       <p>This is a friendly reminder to verify ownership of your device:</p>
       <div style="background: #EEF2FF; border-left: 4px solid #2563EB; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
-        <p style="margin: 0; color: #1E40AF; font-weight: 600;">${device.brand} ${device.model}</p>
+        <p style="margin: 0; color: #1E40AF; font-weight: 600;">${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
       </div>
       <p style="color: #6B7280; font-size: 13px;">If the device is already verified, you can ignore this message; the link will simply confirm the status.</p>
     `;

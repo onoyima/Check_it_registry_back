@@ -1,5 +1,6 @@
 // Payment Recovery Service - Paid device recovery services
 const Database = require('../config');
+const { escapeHtml } = require('../utils/escape-html');
 const NotificationService = require('./NotificationService');
 const EmailTemplate = require('./EmailTemplate');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
@@ -780,7 +781,7 @@ class PaymentRecoveryService {
       <p>Your <strong>${this.packages[service.service_package].name}</strong> recovery service has been activated for:</p>
 
       <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 16px; border-radius: 8px; margin: 20px 0;">
-        <h3 style="margin: 0 0 10px; color: #166534;">${service.brand} ${service.model}</h3>
+        <h3 style="margin: 0 0 10px; color: #166534;">${escapeHtml(service.brand)} ${escapeHtml(service.model)}</h3>
         <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #166534;">
           <tr><td style="font-weight: 600; padding-right: 12px;">Service Package:</td><td>${this.packages[service.service_package].name}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Active Until:</td><td>${new Date(service.expires_at).toLocaleDateString()}</td></tr>
@@ -817,7 +818,7 @@ class PaymentRecoveryService {
       <p>There's an update on your recovery service for:</p>
 
       <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 20px 0;">
-        <h3 style="margin: 0 0 10px; color: #111827;">${service.brand} ${service.model}</h3>
+        <h3 style="margin: 0 0 10px; color: #111827;">${escapeHtml(service.brand)} ${escapeHtml(service.model)}</h3>
         <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
           <tr><td style="font-weight: 600; padding-right: 12px;">Status:</td><td><span style="color: #2563EB;">${this.getStatusDisplayName(oldStatus)}</span> → <span style="color: #2563EB; font-weight: 600;">${this.getStatusDisplayName(newStatus)}</span></td></tr>
           ${service.agent_name ? `<tr><td style="font-weight: 600; padding-right: 12px;">Agent:</td><td>${service.agent_name}</td></tr>` : ''}
@@ -847,7 +848,7 @@ class PaymentRecoveryService {
       <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 20px 0;">
         <h3 style="margin: 0 0 10px; color: #111827;">Refund Details</h3>
         <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
-          <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${service.brand} ${service.model}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${escapeHtml(service.brand)} ${escapeHtml(service.model)}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Original Amount:</td><td>$${service.amount_paid}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Refund Amount:</td><td>$${refundAmount}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Refund Method:</td><td>Original payment method</td></tr>
@@ -861,13 +862,13 @@ class PaymentRecoveryService {
 
   generateAgentAssignmentEmail(agent, service) {
     return `
-      <p>Hello <strong>${agent.name}</strong>,</p>
+      <p>Hello <strong>${escapeHtml(agent.name)}</strong>,</p>
       <p>You have been assigned a new recovery case.</p>
 
       <div style="background: #FEF2F2; border-left: 4px solid #DC2626; padding: 16px; border-radius: 8px; margin: 20px 0;">
         <h3 style="margin: 0 0 10px; color: #991B1B;">Case Details</h3>
         <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #991B1B;">
-          <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${service.brand} ${service.model}</td></tr>
+          <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${escapeHtml(service.brand)} ${escapeHtml(service.model)}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Category:</td><td>${service.category}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Service Package:</td><td>${this.packages[service.service_package].name}</td></tr>
           <tr><td style="font-weight: 600; padding-right: 12px;">Client:</td><td>${service.user_display_name}</td></tr>

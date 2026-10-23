@@ -18,7 +18,7 @@ class DeviceCategoryService {
         name: 'Computer',
         requiredFields: ['serialNumber', 'brand', 'model'],
         optionalFields: ['macAddress', 'processorType', 'operatingSystem', 'ramSize'],
-        identifierFormat: /^[A-Z0-9]{6,20}$/, // Serial number format
+        identifierFormat: /^[A-Z0-9][A-Z0-9-]{3,29}$/, // Serial number (letters, digits, dashes)
         validationRules: {
           macAddress: this.validateMACAddress,
           serialNumber: this.validateSerialNumber
@@ -28,7 +28,7 @@ class DeviceCategoryService {
         name: 'Smart Watch',
         requiredFields: ['serialNumber', 'brand', 'model'],
         optionalFields: ['imei', 'bluetoothMac', 'operatingSystem', 'color'],
-        identifierFormat: /^[A-Z0-9]{6,20}$/, // Serial number format
+        identifierFormat: /^[A-Z0-9][A-Z0-9-]{3,29}$/, // Serial number or IMEI
         validationRules: {
           serialNumber: this.validateSerialNumber,
           imei: this.validateIMEI
@@ -49,16 +49,18 @@ class DeviceCategoryService {
         name: 'Electronics',
         requiredFields: ['serialNumber', 'brand', 'model'],
         optionalFields: ['modelNumber', 'manufactureDate', 'warranty'],
-        identifierFormat: /^[A-Z0-9]{4,30}$/, // Generic serial format
+        identifierFormat: /^[A-Z0-9][A-Z0-9-]{3,29}$/, // Generic serial format
         validationRules: {
           serialNumber: this.validateSerialNumber
         }
       },
       jewelry: {
         name: 'Jewelry',
-        requiredFields: ['description', 'material', 'estimatedValue'],
-        optionalFields: ['certificateNumber', 'appraisalDate', 'insurance'],
-        identifierFormat: /^[A-Z0-9]{4,20}$/, // Certificate or ID format
+        // Jewellery rarely has a serial: a description (and a certificate
+        // number when there is one) identifies it.
+        requiredFields: ['description', 'brand', 'model'],
+        optionalFields: ['certificateNumber', 'material', 'estimatedValue', 'appraisalDate'],
+        identifierFormat: /^.{3,500}$/s,
         validationRules: {
           estimatedValue: this.validateCurrency,
           certificateNumber: this.validateCertificate
@@ -68,12 +70,30 @@ class DeviceCategoryService {
         name: 'Others',
         requiredFields: ['description', 'brand', 'model'],
         optionalFields: ['serialNumber', 'modelNumber', 'estimatedValue'],
-        identifierFormat: /^.{3,50}$/, // Flexible format
+        identifierFormat: /^.{3,500}$/s, // Serial number or description
         validationRules: {
           estimatedValue: this.validateCurrency
         }
       }
     };
+  }
+
+  // Map any category name the apps use (smartphone, laptop, motorcycle,
+  // headphones ...) to one of the stored categories above.
+  normalizeCategory(input) {
+    const key = String(input || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (this.categories[key]) return key;
+    const map = {
+      phone: 'mobile_phone', mobile: 'mobile_phone', smartphone: 'mobile_phone', tablet: 'mobile_phone', ipad: 'mobile_phone',
+      computer: 'computer', computers: 'computer', laptop: 'computer', desktop: 'computer', pc: 'computer', macbook: 'computer',
+      smartwatch: 'smart_watch', smart_watch: 'smart_watch', watch: 'smart_watch', wearable: 'smart_watch',
+      vehicle: 'vehicle', car: 'vehicle', motorcycle: 'vehicle', motorbike: 'vehicle', bike: 'vehicle', truck: 'vehicle', keke: 'vehicle', tricycle: 'vehicle',
+      electronics: 'electronics', headphones: 'electronics', earbuds: 'electronics', speaker: 'electronics', camera: 'electronics',
+      console: 'electronics', tv: 'electronics', television: 'electronics', appliance: 'electronics', drone: 'electronics', generator: 'electronics',
+      jewelry: 'jewelry', jewellery: 'jewelry', ring: 'jewelry', necklace: 'jewelry',
+      other: 'others', others: 'others',
+    };
+    return map[key] || 'others';
   }
 
   // Get category configuration
@@ -100,10 +120,11 @@ class DeviceCategoryService {
 
     const errors = [];
 
-    // Check required fields
+    // Check required fields (in words people understand)
+    const labels = { imei: 'IMEI', serialNumber: 'Serial number', vin: 'VIN (chassis number)', brand: 'Brand', model: 'Model', description: 'Description', estimatedValue: 'Estimated value' };
     for (const field of config.requiredFields) {
       if (!deviceData[field] || deviceData[field].toString().trim() === '') {
-        errors.push(`${field} is required for ${config.name}`);
+        errors.push(`${labels[field] || field} is required for a ${config.name.toLowerCase()}`);
       }
     }
 
@@ -119,7 +140,7 @@ class DeviceCategoryService {
 
     // Validate primary identifier format
     const primaryIdentifier = this.getPrimaryIdentifier(category, deviceData);
-    if (!primaryIdentifier || primaryIdentifier.toString().trim() === '') {
+    if ((!primaryIdentifier || primaryIdentifier.toString().trim() === '') && errors.length === 0) {
       errors.push(`${this.getPrimaryIdentifierName(category)} is required`);
     }
     if (primaryIdentifier && !config.identifierFormat.test(primaryIdentifier)) {
@@ -212,6 +233,10 @@ class DeviceCategoryService {
     if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) {
       return { valid: false, error: 'VIN must be 17 characters (excluding I, O, Q)' };
     }
+    // The check digit (position 9) is only mandatory for North American
+    // vehicles; Japanese, European and Asian VINs often don't use it, so
+    // only enforce it when the VIN starts with a North American code (1-5).
+    if (!/^[1-5]/.test(vin)) return { valid: true };
 
     // VIN check digit validation (simplified)
     const weights = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];

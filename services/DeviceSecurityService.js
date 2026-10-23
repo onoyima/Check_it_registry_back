@@ -1,5 +1,6 @@
 // Device Security Service for tracking and managing trusted devices
 const crypto = require('crypto');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
 const EmailTemplate = require('./EmailTemplate');
 const OTPService = require('./OTPService');
@@ -264,7 +265,7 @@ class DeviceSecurityService {
         'Device Login Alert';
 
       const content = `
-        <p>Hello <strong>${getDisplayName(user)}</strong>,</p>
+        <p>Hello <strong>${escapeHtml(getDisplayName(user))}</strong>,</p>
         <p>A ${isNewDevice ? 'new ' : ''}login was detected on your account.</p>
         <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
           <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">

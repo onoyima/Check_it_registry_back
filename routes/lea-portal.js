@@ -1,5 +1,6 @@
 // LEA (Law Enforcement Agency) Portal Routes
 const express = require('express');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
@@ -33,7 +34,7 @@ router.get('/stats', async (req, res) => {
     }
 
     // Build region filter for queries
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     // Get case statistics
@@ -97,7 +98,7 @@ router.get('/reported-devices', async (req, res) => {
     const { page = 1, limit = 20 } = req.query;
     const offset = (page - 1) * limit;
 
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [req.user.region];
 
     const rows = await Database.query(`
@@ -158,7 +159,7 @@ router.get('/reported-devices', async (req, res) => {
 router.get('/alerts/device-checks', async (req, res) => {
   try {
     const { limit = 50 } = req.query;
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND owner.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND owner.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [req.user.region];
 
     const rows = await Database.query(`
@@ -297,7 +298,7 @@ router.get('/device-search', async (req, res) => {
   try {
     const { imei, serial, brand, model, owner_name, owner_email, region, status, limit = 50 } = req.query;
     const userRegion = req.user.region;
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     const conditions = ['1=1'];
@@ -337,7 +338,7 @@ router.get('/recovery', async (req, res) => {
     const { page = 1, limit = 20, status } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const userRegion = req.user.region;
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     let statusFilter = '';
@@ -397,7 +398,7 @@ router.get('/recovery/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const userRegion = req.user.region;
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     const rows = await Database.query(`
@@ -455,7 +456,7 @@ router.get('/devices/:id', async (req, res) => {
     const userRegion = req.user.region;
 
     // Region filter: admin can see all, LEA restricted to their region (by device owner region)
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     // Device with owner info
@@ -571,7 +572,7 @@ router.get('/cases/:caseId', async (req, res) => {
     const userRegion = req.user.region;
 
     // Build region filter
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     const caseDetails = await Database.query(`
@@ -607,7 +608,7 @@ router.get('/cases/:caseId', async (req, res) => {
       JOIN users u ON d.user_id = u.id
       LEFT JOIN law_enforcement_agencies lea ON r.assigned_lea_id = lea.id
       LEFT JOIN users reporter ON r.reporter_id = reporter.id
-      WHERE r.case_id = ? OR r.id = ?
+      WHERE (r.case_id = ? OR r.id = ?)
       ${regionFilter}
     `, [caseId, caseId, ...regionParams]);
 
@@ -655,7 +656,7 @@ router.put('/cases/:caseId/status', async (req, res) => {
     }
 
     // Get case details first
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     const caseDetails = await Database.query(`
@@ -663,7 +664,7 @@ router.put('/cases/:caseId/status', async (req, res) => {
       FROM reports r
       JOIN devices d ON r.device_id = d.id
       JOIN users u ON d.user_id = u.id
-      WHERE r.case_id = ? OR r.id = ?
+      WHERE (r.case_id = ? OR r.id = ?)
       ${regionFilter}
     `, [caseId, caseId, ...regionParams]);
 
@@ -703,7 +704,7 @@ router.put('/cases/:caseId/status', async (req, res) => {
           `
             <h2>Case Status Update</h2>
             <p>Your case <strong>${caseId}</strong> has been marked as resolved.</p>
-            <p><strong>Device:</strong> ${reportCase.brand} ${reportCase.model}</p>
+            <p><strong>Device:</strong> ${escapeHtml(reportCase.brand)} ${escapeHtml(reportCase.model)}</p>
             ${notes ? `<p><strong>LEA Notes:</strong> ${notes}</p>` : ''}
             <p>Thank you for using Prove Ownership Device Registry.</p>
           `,
@@ -738,7 +739,7 @@ router.post('/cases/:caseId/notes', async (req, res) => {
     }
 
     // Get case details first
-    const regionFilter = req.user.role === 'admin' ? '' : 'AND u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'AND u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     const caseDetails = await Database.query(`
@@ -746,7 +747,7 @@ router.post('/cases/:caseId/notes', async (req, res) => {
       FROM reports r
       JOIN devices d ON r.device_id = d.id
       JOIN users u ON d.user_id = u.id
-      WHERE r.case_id = ? OR r.id = ?
+      WHERE (r.case_id = ? OR r.id = ?)
       ${regionFilter}
     `, [caseId, caseId, ...regionParams]);
 
@@ -795,7 +796,7 @@ router.get('/regional-stats', async (req, res) => {
     const userRegion = req.user.region;
 
     // Admin can see all regions, LEA only their region
-    const regionFilter = req.user.role === 'admin' ? '' : 'WHERE u.region = ?';
+    const regionFilter = ['admin', 'super_admin'].includes(req.user.role) ? '' : 'WHERE u.region = ?';
     const regionParams = req.user.role === 'admin' ? [] : [userRegion];
 
     const regionalStats = await Database.query(`
@@ -907,7 +908,7 @@ router.get('/export/cases', async (req, res) => {
 router.get('/settings', async (req, res) => {
   try {
     const rows = await Database.query(
-      `SELECT id, ${nameSelectColumns}, email, phone, region, department, agency_id,
+      `SELECT id, name, email, phone, region, department, agency_id,
               first_name, middle_name, last_name, created_at
        FROM users WHERE id = ?`,
       [req.user.id]
@@ -1008,7 +1009,7 @@ router.get('/threads', async (req, res) => {
     const threads = await Database.query(`
       SELECT t.id, t.subject, t.case_id, t.status, t.created_at, t.updated_at,
              p.id AS participant_id, p.user_id, p.role AS participant_role, p.last_read_at,
-             ${nameSelectColumns.replace(/u\./g, 'u2.')} AS participant_name
+             COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.middle_name, u2.last_name)), ''), u2.name) AS participant_name
       FROM lea_threads t
       JOIN lea_thread_participants p ON p.thread_id = t.id
       JOIN users u2 ON p.user_id = u2.id
@@ -1104,7 +1105,7 @@ router.get('/threads/:threadId/messages', async (req, res) => {
     const { threadId } = req.params;
     const messages = await Database.query(`
       SELECT m.id, m.thread_id AS threadId, m.sender_id AS senderId, m.content, m.created_at AS createdAt, m.updated_at AS updatedAt,
-             ${nameSelectColumns.replace(/u\./g, 'u2.')} AS senderName
+             COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.middle_name, u2.last_name)), ''), u2.name) AS senderName
       FROM lea_thread_messages m
       JOIN users u2 ON m.sender_id = u2.id
       WHERE m.thread_id = ?

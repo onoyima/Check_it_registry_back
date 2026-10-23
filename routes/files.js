@@ -2,7 +2,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs').promises;
-const { authenticateToken, requireRole } = require('../middleware/auth');
+const { authenticateToken, requireRole, loadUserForToken } = require('../middleware/auth');
 const FileUploadService = require('../services/FileUploadService');
 const Database = require('../config');
 const fsStream = require('fs');
@@ -57,7 +57,7 @@ router.get('/view/proof/:deviceId', authenticateToken, async (req, res) => {
     const { deviceId } = req.params;
     const row = await Database.selectOne(
       'devices',
-      'proof_blob, proof_mime, proof_filename, proof_url',
+      'user_id, proof_blob, proof_mime, proof_filename, proof_url',
       'id = ?',
       [deviceId]
     );
@@ -66,9 +66,18 @@ router.get('/view/proof/:deviceId', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
 
+    // Only the device owner, admins and police may see an ownership proof
+    if (row.user_id !== req.user.id && !['admin', 'super_admin', 'lea'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'You do not have access to this document' });
+    }
+
     // If stored on disk (new method), serve the file directly (no redirect — preserves auth)
     if (row.proof_url && row.proof_url.startsWith('/uploads/')) {
-      const filePath = path.join(__dirname, '..', row.proof_url);
+      const parts = row.proof_url.replace('/uploads/', '').split('/');
+      const filePath = parts.length === 2 ? FileUploadService.safeResolve(parts[0], parts[1]) : null;
+      if (!filePath) {
+        return res.status(404).json({ error: 'Proof document not found' });
+      }
       try {
         await fs.access(filePath);
         const stats = await fs.stat(filePath);
@@ -112,61 +121,48 @@ router.get('/view/proof/:deviceId', authenticateToken, async (req, res) => {
 });
 
 // Serve uploaded files (with access control)
+// Private folders (proofs, evidence, ids, kyc, transfers) are served only to
+// the uploader, the owner of the related device/report, admins and police.
 router.get('/view/:subdir/:filename', async (req, res) => {
   try {
     const { subdir, filename } = req.params;
-    const { token } = req.query; // Optional token for authenticated access
 
-    // Validate subdirectory
-    const allowedSubdirs = ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc', 'profiles', 'kyc'];
-    if (!allowedSubdirs.includes(subdir)) {
-      return res.status(400).json({ error: 'Invalid subdirectory' });
+    // Resolve safely: rejects unknown folders and any path traversal
+    const filePath = FileUploadService.safeResolve(subdir, filename);
+    if (!filePath) {
+      return res.status(400).json({ error: 'Invalid file path' });
     }
 
-    // Build file path
-    const uploadsDir = path.join(__dirname, '../uploads');
-    const filePath = path.join(uploadsDir, subdir, filename);
-
-    // Check if file exists
     try {
       await fs.access(filePath);
     } catch (error) {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    // For sensitive files, require authentication
-    const sensitiveSubdirs = ['proofs', 'evidence', 'ids'];
-    if (sensitiveSubdirs.includes(subdir)) {
-      // Check for authentication
-      let user = null;
-      
-      if (token) {
-        try {
-          user = Database.verifyJWT(token);
-        } catch (error) {
-          return res.status(401).json({ error: 'Invalid token' });
-        }
-      } else if (req.headers.authorization) {
-        try {
-          const authToken = req.headers.authorization.split(' ')[1];
-          user = Database.verifyJWT(authToken);
-        } catch (error) {
-          return res.status(401).json({ error: 'Invalid authorization' });
-        }
-      }
-
-      if (!user) {
+    const isPrivate = FileUploadService.constructor.PRIVATE_SUBDIRS.includes(subdir);
+    if (isPrivate) {
+      // Token from the Authorization header (preferred) or ?token= for <img> tags
+      const raw = (req.headers.authorization && req.headers.authorization.split(' ')[1]) || req.query.token;
+      if (!raw) {
         return res.status(401).json({ error: 'Authentication required for this file' });
       }
-
-      // Additional access control can be added here based on user role and file ownership
+      let decoded;
+      try {
+        decoded = Database.verifyJWT(raw);
+      } catch (error) {
+        return res.status(401).json({ error: 'Invalid or expired token' });
+      }
+      const { user, error: authError, status: authStatus } = await loadUserForToken(decoded);
+      if (authError) {
+        return res.status(authStatus).json({ error: authError });
+      }
+      if (!(await FileUploadService.canAccess(user, subdir, filename))) {
+        return res.status(403).json({ error: 'You do not have access to this file' });
+      }
     }
 
-    // Get file stats for headers
     const stats = await fs.stat(filePath);
     const ext = path.extname(filename).toLowerCase();
-
-    // Set appropriate content type
     const contentTypes = {
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
@@ -176,25 +172,19 @@ router.get('/view/:subdir/:filename', async (req, res) => {
       '.doc': 'application/msword',
       '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     };
-
     const contentType = contentTypes[ext] || 'application/octet-stream';
 
-    // Set headers
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Length', stats.size);
-    res.setHeader('Cache-Control', contentType.startsWith('image/') ? 'public, max-age=604800' : 'private, max-age=3600');
-
-    // For images, allow inline display; for documents, suggest download
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', isPrivate ? 'private, max-age=600' : 'public, max-age=604800');
     if (contentType.startsWith('image/')) {
       res.setHeader('Content-Disposition', 'inline');
     } else {
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     }
 
-    // Stream the file
-    const fileStream = fsStream.createReadStream(filePath);
-    fileStream.pipe(res);
-
+    fsStream.createReadStream(filePath).pipe(res);
   } catch (error) {
     console.error('File serve error:', error);
     res.status(500).json({ error: 'Failed to serve file' });
@@ -215,10 +205,17 @@ router.post('/upload/proof', authenticateToken, (req, res) => {
     }
 
     try {
+      // Only attach the proof to an item the uploader owns
+      let deviceId = null;
+      if (req.body.device_id) {
+        const owned = await Database.selectOne('devices', 'id', 'id = ? AND user_id = ?', [req.body.device_id, req.user.id]);
+        if (!owned) return res.status(404).json({ error: 'Device not found' });
+        deviceId = owned.id;
+      }
       const processedFiles = await FileUploadService.processUploadedFiles(
         req.file,
         req.user.id,
-        req.body.device_id,
+        deviceId,
         'device_proof'
       );
 
@@ -249,10 +246,16 @@ router.post('/upload/device-image', authenticateToken, (req, res) => {
     }
 
     try {
+      let deviceId = null;
+      if (req.body.device_id) {
+        const owned = await Database.selectOne('devices', 'id', 'id = ? AND user_id = ?', [req.body.device_id, req.user.id]);
+        if (!owned) return res.status(404).json({ error: 'Device not found' });
+        deviceId = owned.id;
+      }
       const processedFiles = await FileUploadService.processUploadedFiles(
         req.file,
         req.user.id,
-        req.body.device_id,
+        deviceId,
         'device_image'
       );
 
@@ -385,14 +388,18 @@ router.delete('/:subdir/:filename', authenticateToken, async (req, res) => {
   try {
     const { subdir, filename } = req.params;
 
-    // Validate subdirectory
-    const allowedSubdirs = ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc', 'profiles', 'kyc'];
-    if (!allowedSubdirs.includes(subdir)) {
-      return res.status(400).json({ error: 'Invalid subdirectory' });
+    if (!FileUploadService.safeResolve(subdir, filename)) {
+      return res.status(400).json({ error: 'Invalid file path' });
     }
 
-    // Additional authorization checks can be added here
-    // For now, users can only delete their own files (implement based on your needs)
+    // Only the uploader (or an admin) may delete a file
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    if (!isAdmin) {
+      const owner = await Database.queryOne('SELECT user_id FROM file_owners WHERE file_key = ?', [`${subdir}/${filename}`]);
+      if (!owner || owner.user_id !== req.user.id) {
+        return res.status(403).json({ error: 'You can only delete files you uploaded' });
+      }
+    }
 
     const success = await FileUploadService.deleteFile(filename, subdir);
 

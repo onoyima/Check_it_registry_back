@@ -5,14 +5,10 @@ const PaymentService = require('../services/PaymentService');
 const Database = require('../config');
 
 // Add a new payment method
-router.post('/methods', authenticateToken, async (req, res) => {
-  try {
-    const method = await PaymentService.addPaymentMethod(req.user.id, req.body);
-    res.status(201).json(method);
-  } catch (error) {
-    console.error('Add payment method error:', error);
-    res.status(400).json({ error: error.message });
-  }
+// Saving cards is switched off: card numbers and CVVs must never reach this
+// server (PCI DSS). Payments go through Paystack's hosted page instead.
+router.post('/methods', authenticateToken, (req, res) => {
+  res.status(410).json({ error: 'Cards are entered on Paystack when you pay; they are not saved here.' });
 });
 
 // Get user payment methods
@@ -33,37 +29,6 @@ router.delete('/methods/:id', authenticateToken, async (req, res) => {
     res.json({ message: 'Payment method removed' });
   } catch (error) {
     console.error('Delete payment method error:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// Process a payment (Simulated transaction)
-router.post('/charge', authenticateToken, async (req, res) => {
-  try {
-    const { amount, methodId, description } = req.body;
-    
-    // Create transaction record
-    const transaction = await PaymentService.createTransaction(
-      req.user.id, 
-      amount, 
-      'marketplace_purchase', // generic for now
-      null, // related entity
-      null
-    );
-
-    // Process payment
-    const result = await PaymentService.processPayment(req.user.id, amount, methodId);
-    
-    // Update transaction status
-    await Database.update('transactions', { 
-      status: 'completed', 
-      reference: result.transaction_id,
-      updated_at: new Date()
-    }, 'id = ?', [transaction.id]);
-
-    res.json({ success: true, transactionId: transaction.id });
-  } catch (error) {
-    console.error('Payment charge error:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -124,55 +89,6 @@ router.get('/history', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Get payment history error:', err);
     res.status(500).json({ error: 'Failed to fetch payment history' });
-  }
-});
-
-// Confirm payment (mobile)
-router.post('/confirm', authenticateToken, async (req, res) => {
-  try {
-    const { reference, listing_id } = req.body;
-
-    if (!reference) {
-      return res.status(400).json({ error: 'Reference is required' });
-    }
-
-    await Database.update('transactions', {
-      status: 'completed',
-      updated_at: new Date()
-    }, 'reference = ? AND user_id = ?', [reference, req.user.id]);
-
-    res.json({ success: true, message: 'Payment confirmed successfully' });
-  } catch (error) {
-    console.error('Confirm payment error:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// Payment callback (mobile)
-router.post('/callback', async (req, res) => {
-  try {
-    const { reference, status } = req.body;
-
-    if (!reference) {
-      return res.status(400).json({ error: 'Reference is required' });
-    }
-
-    if (status === 'success' || status === 'completed') {
-      await Database.update('transactions', {
-        status: 'completed',
-        updated_at: new Date()
-      }, 'reference = ?', [reference]);
-    } else {
-      await Database.update('transactions', {
-        status: 'failed',
-        updated_at: new Date()
-      }, 'reference = ?', [reference]);
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Payment callback error:', error);
-    res.status(500).json({ success: false, error: error.message });
   }
 });
 

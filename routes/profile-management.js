@@ -4,7 +4,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const Database = require('../config');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, revokeUserTokens, issueLoginToken } = require('../middleware/auth');
+const { checkPassword } = require('../utils/password-policy');
 const ArchiveService = require('../services/ArchiveService');
 const OTPService = require('../services/OTPService');
 const FileUploadService = require('../services/FileUploadService');
@@ -247,8 +248,14 @@ router.put('/notifications', authenticateToken, async (req, res) => {
 router.put('/password', authenticateToken, async (req, res) => {
   try {
     // Validate input
-    validatePasswordChange(req.body);
     const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new password are required' });
+    }
+    const passwordProblem = checkPassword(newPassword);
+    if (passwordProblem) {
+      return res.status(400).json({ error: passwordProblem });
+    }
 
     // Get current password hash
     const user = await Database.selectOne('users', 'password_hash', 'id = ?', [req.user.id]);
@@ -279,7 +286,11 @@ router.put('/password', authenticateToken, async (req, res) => {
     await logActivity(req.user.id, 'password_changed', 'auth', req.user.id, 
       'User successfully changed their password', req.ip, req.get('User-Agent'));
 
-    res.json({ message: 'Password changed successfully' });
+    // End every other login, then give this browser a fresh token
+    await revokeUserTokens(req.user.id);
+    const token = await issueLoginToken(req.user);
+
+    res.json({ message: 'Password changed successfully. Other devices have been signed out.', token });
   } catch (error) {
     console.error('Error changing password:', error);
     res.status(500).json({ error: 'Failed to change password' });
@@ -414,7 +425,7 @@ router.post('/delete-account', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Please type DELETE_MY_ACCOUNT to confirm' });
     }
     // Verify OTP
-    const otpResult = await OTPService.verifyOTP(req.user.id, 'account_deletion', otpCode);
+    const otpResult = await OTPService.verifyOTP(req.user.id, otpCode, 'account_deletion');
     if (!otpResult.success) {
       return res.status(400).json({ error: otpResult.error || 'Invalid OTP' });
     }

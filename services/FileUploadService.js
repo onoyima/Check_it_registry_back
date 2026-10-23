@@ -66,6 +66,11 @@ class FileUploadService {
   getUploadSubdir(fieldname) {
     const subdirs = {
       'proof_document': 'proofs',
+      // Private documents: these used to fall through to the PUBLIC "misc"
+      // folder, where anyone with the link could open them.
+      'device_proof': 'proofs',
+      'report_evidence': 'evidence',
+      'transfer_proof': 'transfers',
       'device_image': 'devices',
       'evidence': 'evidence',
       'handover_proof': 'transfers',
@@ -123,12 +128,75 @@ class FileUploadService {
   }
 
   // Save buffer to disk and return the URL path
-  async saveToDisk(buffer, subdir, filename) {
+  async saveToDisk(buffer, subdir, filename, ownerId = null) {
     const dirPath = path.join(this.uploadsDir, subdir);
     await this.ensureDir(dirPath);
-    const filePath = path.join(dirPath, filename);
+    const filePath = this.safeResolve(subdir, filename);
+    if (!filePath) throw new Error('Invalid file name');
     await fs.writeFile(filePath, buffer);
+    if (ownerId) await this.recordOwner(subdir, filename, ownerId);
     return `/uploads/${subdir}/${filename}`;
+  }
+
+  // Known upload folders. Anything else is rejected.
+  static get SUBDIRS() {
+    return ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc', 'profiles', 'kyc'];
+  }
+
+  // Folders whose files are private to the uploader (plus admins / police).
+  static get PRIVATE_SUBDIRS() {
+    return ['proofs', 'evidence', 'ids', 'kyc', 'transfers'];
+  }
+
+  // Resolve a file inside an upload folder, refusing path traversal
+  // ("../", encoded slashes, absolute paths, hidden files). Returns null if unsafe.
+  safeResolve(subdir, filename) {
+    if (!FileUploadService.SUBDIRS.includes(subdir)) return null;
+    if (typeof filename !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(filename)) return null;
+    const base = path.resolve(this.uploadsDir, subdir);
+    const full = path.resolve(base, filename);
+    if (!full.startsWith(base + path.sep)) return null;
+    return full;
+  }
+
+  // Remember who uploaded a file so private files can be served only to them.
+  async recordOwner(subdir, filename, ownerId) {
+    try {
+      await Database.query(
+        'INSERT IGNORE INTO file_owners (file_key, user_id, created_at) VALUES (?, ?, NOW())',
+        [`${subdir}/${filename}`, ownerId]
+      );
+    } catch (e) {
+      console.warn('Could not record file owner:', e.message);
+    }
+  }
+
+  // Can this user read this file? Admins and police can read private files;
+  // everyone else only files they uploaded or that belong to their own
+  // device / report.
+  async canAccess(user, subdir, filename) {
+    if (!FileUploadService.PRIVATE_SUBDIRS.includes(subdir)) return true;
+    if (!user) return false;
+    if (['admin', 'super_admin', 'lea'].includes(user.role)) return true;
+    const key = `${subdir}/${filename}`;
+    const url = `/uploads/${key}`;
+    try {
+      const owner = await Database.queryOne('SELECT user_id FROM file_owners WHERE file_key = ?', [key]);
+      if (owner) return owner.user_id === user.id;
+      const dev = await Database.queryOne(
+        'SELECT id FROM devices WHERE user_id = ? AND (proof_url = ? OR device_image_url = ?) LIMIT 1',
+        [user.id, url, url]
+      );
+      if (dev) return true;
+      const rep = await Database.queryOne(
+        'SELECT id FROM reports WHERE reporter_id = ? AND evidence_url LIKE ? LIMIT 1',
+        [user.id, `%${key}%`]
+      );
+      return !!rep;
+    } catch (e) {
+      console.warn('File access check failed:', e.message);
+      return false;
+    }
   }
 
   // Process uploaded files - save to disk with image optimization
@@ -160,7 +228,7 @@ class FileUploadService {
                        finalMime === 'image/png' ? '.png' :
                        finalMime === 'image/gif' ? '.gif' : ext;
       const filename = this.generateFilename(file.originalname, savedExt);
-      const imageUrl = await this.saveToDisk(finalBuffer, subdir, filename);
+      const imageUrl = await this.saveToDisk(finalBuffer, subdir, filename, userId);
 
       const publicUrl = `${baseUrl}${imageUrl}`;
 
@@ -234,7 +302,7 @@ class FileUploadService {
                      finalMime === 'image/png' ? '.png' :
                      finalMime === 'image/gif' ? '.gif' : ext;
     const filename = this.generateFilename(originalname, savedExt);
-    const imageUrl = await this.saveToDisk(finalBuffer, subdir, filename);
+    const imageUrl = await this.saveToDisk(finalBuffer, subdir, filename, userId);
 
     return {
       filename,
@@ -270,11 +338,15 @@ class FileUploadService {
     return errors;
   }
 
-  async deleteFile(filename, fieldname) {
+  async deleteFile(filename, subdirOrFieldname) {
     try {
-      const subdir = this.getUploadSubdir(fieldname);
-      const filePath = path.join(this.uploadsDir, subdir, filename);
+      const subdir = FileUploadService.SUBDIRS.includes(subdirOrFieldname)
+        ? subdirOrFieldname
+        : this.getUploadSubdir(subdirOrFieldname);
+      const filePath = this.safeResolve(subdir, filename);
+      if (!filePath) return false;
       await fs.unlink(filePath);
+      await Database.query('DELETE FROM file_owners WHERE file_key = ?', [`${subdir}/${filename}`]).catch(() => {});
       return true;
     } catch (error) {
       console.error('Error deleting file:', error);
@@ -285,7 +357,10 @@ class FileUploadService {
   async deleteByUrl(url) {
     try {
       if (!url || !url.startsWith('/uploads/')) return false;
-      const filePath = path.join(this.uploadsDir, url.replace('/uploads/', ''));
+      const parts = url.replace('/uploads/', '').split('/');
+      if (parts.length !== 2) return false;
+      const filePath = this.safeResolve(parts[0], parts[1]);
+      if (!filePath) return false;
       await fs.unlink(filePath);
       return true;
     } catch (error) {

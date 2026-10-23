@@ -54,7 +54,13 @@ router.get('/search-users', async (req, res) => {
       [req.user.id, `%${q}%`]
     );
 
-    res.json({ users });
+    // Suggestions show a masked email only (j***@gmail.com), never the full address
+    const mask = (e) => {
+      if (!e || typeof e !== 'string' || !e.includes('@')) return null;
+      const [local, domain] = e.split('@');
+      return `${local.slice(0, 1)}***@${domain}`;
+    };
+    res.json({ users: users.map((u) => ({ ...u, email: mask(u.email) })) });
 
   } catch (error) {
     console.error('Search users error:', error);
@@ -70,7 +76,8 @@ router.get('/dashboard', async (req, res) => {
     // Get user's devices with detailed info (last 10)
     const devices = await Database.query(`
       SELECT 
-        d.*,
+        d.id, d.user_id, d.category, d.brand, d.model, d.color, d.imei, d.serial, d.vin, d.license_plate,
+        d.certificate_number, d.status, d.ownership_level, d.device_image_url, d.created_at, d.updated_at, d.verified_at,
         CASE 
           WHEN d.status = 'verified' THEN 'Protected'
           WHEN d.status = 'unverified' THEN 'Pending Verification'
@@ -187,7 +194,7 @@ router.get('/devices', async (req, res) => {
     const { status, brand, search, page = 1, limit = 20 } = req.query;
 
     const offset = (page - 1) * limit;
-    let whereClause = 'd.user_id = ?';
+    let whereClause = 'd.user_id = ? AND d.deleted_at IS NULL';
     let whereParams = [userId];
 
     if (status) {
@@ -201,8 +208,8 @@ router.get('/devices', async (req, res) => {
     }
 
     if (search) {
-      whereClause += ' AND (d.brand LIKE ? OR d.model LIKE ? OR d.imei LIKE ? OR d.serial LIKE ?)';
-      whereParams.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      whereClause += ' AND (d.brand LIKE ? OR d.model LIKE ? OR d.imei LIKE ? OR d.serial LIKE ? OR d.vin LIKE ? OR d.license_plate LIKE ?)';
+      whereParams.push(...Array(6).fill(`%${search}%`));
     }
 
     const devices = await Database.query(`
@@ -606,7 +613,7 @@ router.get('/profile', async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const profile = await Database.selectOne(`
+    const profile = await Database.queryOne(`
       SELECT 
         id, name, first_name, middle_name, last_name, email, phone, region, role, verified_at, created_at,
         (SELECT COUNT(*) FROM devices WHERE user_id = ?) as device_count,
@@ -626,7 +633,7 @@ router.get('/profile', async (req, res) => {
     `, [userId]);
 
     // Check if user is suspended
-    const suspension = await Database.selectOne(`
+    const suspension = await Database.queryOne(`
       SELECT reason, expires_at, created_at
       FROM user_suspensions
       WHERE user_id = ? AND is_active = TRUE

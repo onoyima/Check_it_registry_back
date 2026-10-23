@@ -1,6 +1,6 @@
 const express = require('express');
 const Database = require('../config');
-const { authenticateToken, requireRole } = require('../middleware/auth');
+const { authenticateToken, requireRole, revokeUserTokens, issueLoginToken } = require('../middleware/auth');
 const { validateInput, sanitizeInput } = require('../middleware/validation');
 const AuditService = require('../services/AuditService');
 const crypto = require('crypto');
@@ -282,9 +282,14 @@ router.post('/security/revoke-sessions', authenticateToken, async (req, res) => 
     await AuditService.logActivity(req, req.user.id, 'sessions_revoked', 'security', req.user.id, 
       `User revoked ${result.affectedRows} active sessions`, req.ip, req.get('User-Agent'));
 
+    // Make every existing login token invalid; this browser gets a new one
+    await revokeUserTokens(req.user.id);
+    const token = await issueLoginToken(req.user);
+
     res.json({ 
       message: 'All other sessions have been revoked successfully',
-      revoked_sessions: result.affectedRows
+      revoked_sessions: result.affectedRows,
+      token
     });
   } catch (error) {
     console.error('Error revoking sessions:', error);

@@ -37,7 +37,6 @@ const errorStore = require('./services/ErrorStore');
 // Import middleware
 const { validationErrorHandler } = require('./middleware/validation');
 const { requestLogger } = require('./middleware/requestLogger');
-const { responseEnvelope } = require('./middleware/responseEnvelope');
 
 // Import routes
 const { router: authRoutes } = require('./routes/auth');
@@ -47,6 +46,10 @@ const reportRoutes = require('./routes/report-management');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Behind nginx / a load balancer: trust the number of proxy hops given in
+// TRUST_PROXY (default 1) so req.ip is the real client address.
+app.set('trust proxy', parseInt(process.env.TRUST_PROXY, 10) || 1);
 
 // Security middleware
 app.use(helmet({
@@ -92,11 +95,14 @@ app.use(compression());
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 
 function getCorsOrigin() {
-  if (isDev) return true;
+  // Always an explicit list (credentials are allowed, so never "any origin")
   const allowed = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
     .split(',')
-    .map(s => s.trim().replace(/\/$/, ''));
-  if (allowed.length === 1) return allowed[0];
+    .map(s => s.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  if (isDev) {
+    allowed.push('http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4173');
+  }
   return (origin, callback) => {
     if (!origin || allowed.includes(origin)) {
       callback(null, true);
@@ -118,6 +124,7 @@ app.use(cors({
     'x-location-lat',
     'x-location-lon',
     'x-location-accuracy',
+    'x-mfa-token',
     'User-Agent'
   ]
 }));
@@ -133,22 +140,46 @@ app.use('/api/', apiLimiter);
 // real defense against OTP abuse.
 app.use('/api/auth/', authLimiter);
 
+// Payment webhooks need the raw request body to check Paystack's signature,
+// so they are mounted BEFORE the JSON body parser.
+app.use('/api/payments/webhook', require('./routes/payment-webhook'));
+
 // Body parsing middleware
 app.use(express.json({ limit: '500kb' }));
 app.use(express.urlencoded({ extended: false, limit: '500kb' }));
 
-// IP blocking middleware — blocks IPs that cause repeated errors
-const IP_BLOCK_THRESHOLD = 10;
-const ipFailCount = new Map();
+// Temporary IP blocking for clearly abusive clients. Many Nigerian mobile
+// users share one public IP (carrier NAT), so blocks are short-lived and only
+// count client errors (bad requests, auth failures), never our own 5xx bugs.
+const IP_BLOCK_THRESHOLD = parseInt(process.env.IP_BLOCK_THRESHOLD, 10) || 50;
+const IP_FAIL_WINDOW_MS = 10 * 60 * 1000;
+const IP_BLOCK_MINUTES = parseInt(process.env.IP_BLOCK_MINUTES, 10) || 15;
+const ipFailCount = new Map(); // ip -> { count, since }
+
+function recordClientError(ip) {
+  if (!ip) return;
+  const now = Date.now();
+  const entry = ipFailCount.get(ip);
+  if (!entry || now - entry.since > IP_FAIL_WINDOW_MS) {
+    ipFailCount.set(ip, { count: 1, since: now });
+    return;
+  }
+  entry.count += 1;
+  if (entry.count >= IP_BLOCK_THRESHOLD) {
+    errorStore.blockIp(ip, `More than ${IP_BLOCK_THRESHOLD} rejected requests in 10 minutes`, IP_BLOCK_MINUTES);
+    ipFailCount.delete(ip);
+  }
+}
 
 app.use((req, res, next) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-  if (ip) {
-    const blocked = errorStore.getBlockedIps().find(b => b.ip === ip);
-    if (blocked) {
-      return res.status(403).json({ error: 'Your IP has been blocked due to repeated errors. Contact support.' });
-    }
+  const ip = req.ip;
+  if (ip && errorStore.isBlocked(ip)) {
+    return res.status(429).json({ error: 'Too many failed requests from your network. Please try again in a few minutes.' });
   }
+  // Count rejected requests (400/401/403/429) once the response is finished
+  res.on('finish', () => {
+    if ([400, 401, 403, 429].includes(res.statusCode)) recordClientError(ip);
+  });
   next();
 });
 
@@ -158,23 +189,23 @@ app.use(requestLogger);
 // Serve uploaded files statically — public directories only
 // Sensitive directories (kyc, proofs, evidence, ids) require auth via API routes
 const uploadsPath = path.join(__dirname, 'uploads');
-const publicUploadDirs = ['profiles', 'devices', 'transfers', 'misc'];
+const publicUploadDirs = ['profiles', 'devices', 'misc'];
 app.use('/uploads', (req, res, next) => {
   // Block access to sensitive subdirectories via static serving
   const firstSegment = req.path.split('/')[1];
-  const sensitiveDirs = ['kyc', 'proofs', 'evidence', 'ids'];
-  if (sensitiveDirs.includes(firstSegment)) {
+  const sensitiveDirs = ['kyc', 'proofs', 'evidence', 'ids', 'transfers'];
+  if (!publicUploadDirs.includes(firstSegment) || sensitiveDirs.includes(firstSegment)) {
     return res.status(403).json({ error: 'Access denied' });
   }
   next();
 }, express.static(uploadsPath, {
+  dotfiles: 'deny',
+  index: false,
   maxAge: process.env.NODE_ENV === 'production' ? '7d' : '0',
   etag: true,
   lastModified: true
 }));
 
-// Trust proxy for rate limiting and IP detection
-app.set('trust proxy', 1);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -197,6 +228,7 @@ const kycRoutes = require('./routes/kyc');
 app.use('/api/auth', authRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/device-management', deviceRoutes);
+app.use('/api/ownership', require('./routes/ownership'));
 app.use('/api/public-check', publicCheckRoutes);
 app.use('/api/report-management', reportRoutes);
 app.use('/api/admin-portal', require('./routes/admin-portal'));
@@ -214,7 +246,6 @@ app.use('/api/recovery-services', require('./routes/recovery-services'));
 app.use('/api/marketplace', require('./routes/marketplace'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/payments', require('./routes/payouts'));
-app.use('/api/payments/webhook', require('./routes/payment-webhook'));
 app.use('/api/checkout', require('./routes/checkout'));
 app.use('/api/orders', require('./routes/orders'));
 app.use('/api/escrow', require('./routes/escrow'));
@@ -274,41 +305,14 @@ app.get('/api/openapi.json', (req, res) => {
 });
 
 // Background jobs management (admin only)
-app.get('/api/admin/jobs/status', (req, res) => {
-  // Simple auth check
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
+const { authenticateToken: requireLogin, requireRole: requireRoles } = require('./middleware/auth');
 
-  try {
-    const token = authHeader.split(' ')[1];
-    const user = Database.verifyJWT(token);
-    
-    if (user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-
-    res.json(BackgroundJobs.getStatus());
-  } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
-  }
+app.get('/api/admin/jobs/status', requireLogin, requireRoles(['admin']), (req, res) => {
+  res.json(BackgroundJobs.getStatus());
 });
 
-app.post('/api/admin/jobs/run', async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-
+app.post('/api/admin/jobs/run', requireLogin, requireRoles(['admin']), async (req, res) => {
   try {
-    const token = authHeader.split(' ')[1];
-    const user = Database.verifyJWT(token);
-    
-    if (user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-
     await BackgroundJobs.runJobsNow();
     res.json({ success: true, message: 'Background jobs executed' });
   } catch (error) {
@@ -316,19 +320,28 @@ app.post('/api/admin/jobs/run', async (req, res) => {
   }
 });
 
-// Response envelope middleware — wraps API responses in consistent { success, data } shape
-app.use(responseEnvelope);
+// Recent server errors and blocked IPs (admin only; was a public page)
+app.get('/api/admin/errors', requireLogin, requireRoles(['admin']), (req, res) => {
+  res.json({ status: errorStore.getStatus(), errors: errorStore.getErrors(100), blockedIps: errorStore.getBlockedIps() });
+});
 
-// Landing page — shows errors, blocked IPs, system status
+app.delete('/api/admin/blocked-ips/:ip', requireLogin, requireRoles(['admin']), (req, res) => {
+  errorStore.unblockIp(req.params.ip);
+  res.json({ success: true });
+});
+
+// Root: a plain status line in production. The detailed error page (stack
+// traces, client IPs) is only shown on a developer's machine; admins can read
+// the same data from GET /api/admin/errors.
 app.get('/', (req, res) => {
-  res.send(errorStore.renderLandingPage(req));
+  if (process.env.NODE_ENV === 'development') {
+    return res.send(errorStore.renderLandingPage(req));
+  }
+  res.json({ name: 'Prove Ownership API', status: 'OK' });
 });
 
 // Capture 404s as errors
 app.use('*', (req, res) => {
-  const err = new Error(`Endpoint not found: ${req.method} ${req.originalUrl}`);
-  err.status = 404;
-  errorStore.capture(err, req);
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
@@ -344,18 +357,7 @@ app.use((error, req, res, next) => {
   const message = (error && error.message) || String(error || 'Unknown error');
   if (isDev) console.error('Global error:', error);
 
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress;
-
-  // Track IP failures for potential blocking
   const status = error?.status || error?.statusCode || 500;
-  if (ip && status >= 400) {
-    const count = (ipFailCount.get(ip) || 0) + 1;
-    ipFailCount.set(ip, count);
-    if (count >= IP_BLOCK_THRESHOLD) {
-      errorStore.blockIp(ip, `Exceeded ${IP_BLOCK_THRESHOLD} error threshold`);
-      ipFailCount.delete(ip);
-    }
-  }
 
   errorStore.capture(error, req);
 
@@ -367,8 +369,10 @@ app.use((error, req, res, next) => {
 
   // In production, never leak raw error messages (they may contain SQL, paths,
   // or internal details). Always return a clean, structured response.
+  // 4xx errors raised on purpose (e.g. an invalid field name) carry a safe
+  // message; 5xx details stay on the server.
   const responseBody = {
-    error: isDev ? message : 'An unexpected error occurred. Please try again.'
+    error: (isDev || (status >= 400 && status < 500)) ? message : 'An unexpected error occurred. Please try again.'
   };
 
   try {

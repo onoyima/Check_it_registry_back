@@ -124,6 +124,7 @@ class DeviceCheckService {
           registrationDate: device.created_at,
           lastCheckDate: new Date()
         },
+        ownershipLevel: device.ownership_level || 'registered',
         ownershipWarning: warnings.ownership,
         securityAlerts: warnings.security,
         transferAvailable: checkResult.transferAvailable,
@@ -148,9 +149,14 @@ class DeviceCheckService {
     }
 
     // Validate location data
+    // 0 is a real latitude/longitude (and some browsers report accuracy 0),
+    // so check for numbers rather than "truthy" values.
     const location = checkData.checkerLocation;
-    if (!location.latitude || !location.longitude || !location.accuracy) {
-      throw new Error('Invalid location data');
+    const lat = Number(location.latitude);
+    const lng = Number(location.longitude);
+    if (location.latitude == null || location.longitude == null || !Number.isFinite(lat) || !Number.isFinite(lng)
+      || (location.accuracy != null && !(Number(location.accuracy) >= 0))) {
+      throw Object.assign(new Error('Invalid location data'), { status: 400 });
     }
 
     if (Math.abs(location.latitude) > 90 || Math.abs(location.longitude) > 180) {
@@ -513,8 +519,9 @@ class DeviceCheckService {
 
       return checkLogId;
     } catch (error) {
+      // Never fail the person's check because the log could not be written
       console.error('Check logging error:', error);
-      throw error;
+      return null;
     }
   }
 

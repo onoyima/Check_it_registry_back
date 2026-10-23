@@ -1,5 +1,6 @@
 // Report Management Routes - MySQL Version
 const express = require('express');
+const { escapeHtml } = require('../utils/escape-html');
 const router = express.Router();
 const Database = require('../config');
 const { authenticateToken, collectAuditContext } = require('../middleware/auth');
@@ -78,7 +79,7 @@ router.get('/my-devices', async (req, res) => {
       SELECT id, brand, model, imei, serial, color, category, 
              device_image_url, verified_at, created_at
       FROM devices 
-      WHERE user_id = ? AND status = 'verified'
+      WHERE user_id = ? AND status = 'verified' AND deleted_at IS NULL
       ORDER BY created_at DESC
     `, [userId]);
 
@@ -238,8 +239,15 @@ router.post('/', async (req, res) => {
         });
       }
 
-      // Payment token provided — verify it was successful
-      // (The pay_by_pass token is validated by the payment callback system)
+      // Payment reference provided — confirm with Paystack and use it once
+      const reportInvoice = await RevenueService.redeemPaidInvoice(userId, pay_by_pass, ['report_verification_fee']);
+      if (!reportInvoice) {
+        return res.status(402).json({
+          requiresPayment: true,
+          amount: paymentInfo.amount,
+          error: 'We could not confirm your payment for this report. If you were charged, contact support with your payment reference.'
+        });
+      }
     }
 
     // === FIRST REPORT + NOT KYC VERIFIED: require NIN ===
@@ -319,7 +327,6 @@ router.post('/', async (req, res) => {
 
     // Mark payment invoice as paid if applicable
     if (paymentStatus === 'completed' && pay_by_pass) {
-      await RevenueService.markInvoicePaid(pay_by_pass);
       await RevenueService.chargeForReport(userId, paymentInfo.amount, reportId, pay_by_pass);
     }
 
@@ -353,7 +360,7 @@ router.post('/', async (req, res) => {
           <div style="background: #F3F4F6; border-radius: 8px; padding: 16px; margin: 15px 0;">
             <table cellpadding="4" cellspacing="0" style="font-size: 14px; color: #374151;">
               <tr><td style="font-weight: 600; padding-right: 12px;">Case ID:</td><td>${caseId}</td></tr>
-              <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${device.brand} ${device.model}</td></tr>
+              <tr><td style="font-weight: 600; padding-right: 12px;">Device:</td><td>${escapeHtml(device.brand)} ${escapeHtml(device.model)}</td></tr>
               <tr><td style="font-weight: 600; padding-right: 12px;">IMEI:</td><td>${device.imei || 'N/A'}</td></tr>
               <tr><td style="font-weight: 600; padding-right: 12px;">Report #:</td><td>${reportNumber}</td></tr>
               <tr><td style="font-weight: 600; padding-right: 12px;">Status:</td><td>Open</td></tr>
@@ -426,12 +433,23 @@ router.put('/:case_id', async (req, res) => {
     const caseId = req.params.case_id;
     const userId = req.user.id;
     const userRole = req.user.role;
-    const updateData = req.body;
-
-    if (userRole !== 'admin' && userRole !== 'lea') {
+    if (!['admin', 'super_admin', 'lea'].includes(userRole)) {
       return res.status(403).json({ 
         error: 'Only administrators and law enforcement can update reports' 
       });
+    }
+
+    // Only case-handling fields can be changed; assignment is admin-only.
+    const updateData = Database.pick(req.body, ['status', 'police_report_number', 'circumstances', 'witness_info', 'location']);
+    if (userRole !== 'lea' && req.body.assigned_lea_id !== undefined) {
+      updateData.assigned_lea_id = req.body.assigned_lea_id || null;
+    }
+    const validStatuses = ['open', 'under_review', 'resolved', 'dismissed'];
+    if (updateData.status !== undefined && !validStatuses.includes(updateData.status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ error: 'No editable fields supplied' });
     }
 
     // Get existing report
@@ -444,6 +462,18 @@ router.put('/:case_id', async (req, res) => {
 
     if (!existingReport) {
       return res.status(404).json({ error: 'Report not found' });
+    }
+
+    // Police may only update cases in their own region
+    if (userRole === 'lea') {
+      const inRegion = await Database.queryOne(
+        `SELECT r.id FROM reports r JOIN devices d ON r.device_id = d.id JOIN users u ON d.user_id = u.id
+         WHERE r.id = ? AND u.region = ?`,
+        [existingReport.id, req.user.region]
+      );
+      if (!inRegion) {
+        return res.status(403).json({ error: 'This case is outside your region' });
+      }
     }
 
     // Update report

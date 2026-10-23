@@ -1,5 +1,6 @@
 // Admin Dashboard Routes - Complete Management System
 const express = require('express');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
 const { authenticateToken } = require('../middleware/auth');
 const { require2FASetup } = require('../middleware/twoFaEnforcement');
@@ -67,7 +68,7 @@ router.get('/stats', async (req, res) => {
       Database.query(`
         SELECT COUNT(*) as count 
         FROM reports 
-        WHERE status IN ('active', 'pending_verification')
+        WHERE status IN ('open', 'under_review')
       `),
 
       // Escrow stats
@@ -583,20 +584,20 @@ router.put('/devices/:id', async (req, res) => {
       if (status === 'verified') {
         subject = 'Device Approved';
         content = `
-          <p>Hello <strong>${owner.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(owner.name)}</strong>,</p>
           <p><strong>Great news!</strong> Your device has been approved by our admin team.</p>
           <div style="background: #F0FDF4; border-left: 4px solid #22C55E; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
-            <p style="margin: 0; color: #166534; font-weight: 600;">${currentDevice.brand} ${currentDevice.model}</p>
+            <p style="margin: 0; color: #166534; font-weight: 600;">${escapeHtml(currentDevice.brand)} ${escapeHtml(currentDevice.model)}</p>
           </div>
           <p>Your device is now fully protected in our registry.</p>
         `;
       } else if (status === 'rejected') {
         subject = 'Device Registration Rejected';
         content = `
-          <p>Hello <strong>${owner.name}</strong>,</p>
+          <p>Hello <strong>${escapeHtml(owner.name)}</strong>,</p>
           <p>Unfortunately, your device registration has been rejected.</p>
           <div style="background: #FEF2F2; border-left: 4px solid #EF4444; padding: 12px 16px; border-radius: 8px; margin: 15px 0;">
-            <p style="margin: 0; color: #991B1B; font-weight: 600;">${currentDevice.brand} ${currentDevice.model}</p>
+            <p style="margin: 0; color: #991B1B; font-weight: 600;">${escapeHtml(currentDevice.brand)} ${escapeHtml(currentDevice.model)}</p>
           </div>
           <p><strong>Reason:</strong> ${admin_notes || 'Please contact support for more information'}</p>
           <p>You can resubmit with additional documentation if needed.</p>
@@ -653,7 +654,7 @@ router.get('/reports/:id', async (req, res) => {
       LEFT JOIN users reporter ON r.reporter_id = reporter.id
       JOIN users owner ON d.user_id = owner.id
       LEFT JOIN law_enforcement_agencies lea ON r.assigned_lea_id = lea.id
-      WHERE r.case_id = ? OR r.id = ?
+      WHERE (r.case_id = ? OR r.id = ?)
     `, [caseId, caseId]);
 
     if (!report || report.length === 0) {

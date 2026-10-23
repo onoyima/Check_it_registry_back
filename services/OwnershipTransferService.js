@@ -1,5 +1,6 @@
 // Ownership Transfer Service - Secure device ownership transfers
 const Database = require('../config');
+const { escapeHtml } = require('../utils/escape-html');
 const crypto = require('crypto');
 const OTPService = require('./OTPService');
 const NotificationService = require('./NotificationService');
@@ -10,6 +11,7 @@ class OwnershipTransferService {
   constructor() {
     this.TRANSFER_EXPIRY_HOURS = 48;
     this.OTP_EXPIRY_MINUTES = 15;
+    this.MAX_OTP_ATTEMPTS = 5;
     this.TRANSFER_CODE_LENGTH = 12;
   }
 
@@ -127,6 +129,7 @@ class OwnershipTransferService {
         {
           otp_code: otpCode,
           otp_expires_at: otpExpiresAt,
+          otp_attempts: 0,
           updated_at: new Date()
         },
         'id = ?',
@@ -180,7 +183,7 @@ class OwnershipTransferService {
   }
 
   // Verify transfer OTP
-  async verifyTransferOTP(transferId, otpCode) {
+  async verifyTransferOTP(transferId, otpCode, callerId = null) {
     try {
       // Get transfer details
       const transfer = await Database.selectOne(
@@ -214,8 +217,17 @@ class OwnershipTransferService {
         };
       }
 
+      if (callerId && transfer.from_user_id !== callerId) {
+        return { success: false, error: 'Transfer not found' };
+      }
+
+      if ((transfer.otp_attempts || 0) >= this.MAX_OTP_ATTEMPTS) {
+        return { success: false, error: 'Too many wrong codes. Request a new code.' };
+      }
+
       // Check OTP
-      if (!transfer.otp_code || transfer.otp_code !== otpCode) {
+      if (!transfer.otp_code || String(transfer.otp_code) !== String(otpCode)) {
+        await Database.query('UPDATE ownership_transfers SET otp_attempts = COALESCE(otp_attempts, 0) + 1 WHERE id = ?', [transferId]).catch(() => {});
         return {
           success: false,
           error: 'Invalid verification code'
@@ -334,12 +346,13 @@ class OwnershipTransferService {
   // Complete transfer (buyer claims device)
   async completeTransfer(transferCode, buyerUserId, buyerOtpCode) {
     try {
-      // Find active transfer by code
+      // Find a transfer that is waiting for the buyer (step 1) or for the
+      // buyer's code (step 2)
       const transfer = await Database.selectOne(
         'ownership_transfers',
         '*',
-        'transfer_code = ? AND status = ?',
-        [transferCode, 'active']
+        'transfer_code = ? AND status IN (?, ?)',
+        [transferCode, 'active', 'awaiting_buyer_otp']
       );
 
       if (!transfer) {
@@ -347,6 +360,19 @@ class OwnershipTransferService {
           success: false,
           error: 'Invalid transfer code or transfer not available'
         };
+      }
+
+      if (transfer.from_user_id === buyerUserId) {
+        return { success: false, error: 'You cannot transfer a device to yourself' };
+      }
+
+      // If the seller named a buyer, only that person can claim it
+      const buyer = await Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [buyerUserId]);
+      if (!buyer) {
+        return { success: false, error: 'Account not found' };
+      }
+      if (transfer.buyer_email && String(transfer.buyer_email).toLowerCase().trim() !== String(buyer.email || '').toLowerCase().trim()) {
+        return { success: false, error: 'This transfer was sent to a different email address' };
       }
 
       // Check if transfer expired
@@ -358,9 +384,11 @@ class OwnershipTransferService {
         };
       }
 
-      // If buyer OTP not yet sent or provided, handle OTP step
-      if (!transfer.buyer_otp_code) {
-        // Generate and send buyer OTP, update status to awaiting buyer OTP
+      // Step 1 (or a new request for a code): send the buyer a code
+      if (!buyerOtpCode) {
+        if (transfer.status === 'awaiting_buyer_otp' && transfer.buyer_otp_user_id && transfer.buyer_otp_user_id !== buyerUserId) {
+          return { success: false, error: 'Another account is already completing this transfer' };
+        }
         const otpCode = this.generateOTP();
         const otpExpiresAt = new Date(Date.now() + this.OTP_EXPIRY_MINUTES * 60 * 1000);
 
@@ -369,6 +397,8 @@ class OwnershipTransferService {
           {
             buyer_otp_code: otpCode,
             buyer_otp_expires_at: otpExpiresAt,
+            buyer_otp_user_id: buyerUserId,
+            buyer_otp_attempts: 0,
             status: 'awaiting_buyer_otp',
             updated_at: new Date()
           },
@@ -376,29 +406,19 @@ class OwnershipTransferService {
           [transfer.id]
         );
 
-        // Get buyer details
-        const buyer = await Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [buyerUserId]);
-
         // Send OTP to buyer (do not fail transfer on email errors)
         try {
           await NotificationService.sendEmailDirect(
             buyer.email,
             'Verify Ownership Receipt - Prove Ownership',
-            EmailTemplate.wrapContent('Transfer Completed', `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-                  <h1>ðŸ” Verify Receipt</h1>
-                </div>
-                <div style="padding: 30px; background: #f9f9f9;">
-                  <p>Hello ${getDisplayName(buyer)},</p>
-                  <p>Use this verification code to confirm you are receiving the device:</p>
-                  <div style="background: white; padding: 30px; text-align: center; margin: 20px 0; border: 3px solid #646cff; border-radius: 10px;">
-                    <h1 style="color: #646cff; font-size: 48px; margin: 0; letter-spacing: 10px; font-family: monospace;">${otpCode}</h1>
-                    <p style="margin: 15px 0 0 0; color: #666; font-size: 14px;">This code expires in ${this.OTP_EXPIRY_MINUTES} minutes</p>
-                  </div>
-                  <p>Transfer Code: <span style="font-family: monospace; color: #646cff;">${transferCode}</span></p>
-                </div>
+            EmailTemplate.wrapContent('Confirm you are receiving this device', `
+              <p>Hello ${escapeHtml(getDisplayName(buyer))},</p>
+              <p>Use this code to confirm you are receiving the device:</p>
+              <div style="background: #F0FDF4; padding: 24px; text-align: center; margin: 20px 0; border: 2px solid #16A34A; border-radius: 10px;">
+                <div style="color: #15803D; font-size: 40px; margin: 0; letter-spacing: 10px; font-family: monospace; font-weight: 700;">${otpCode}</div>
+                <p style="margin: 12px 0 0 0; color: #4B5563; font-size: 14px;">This code expires in ${this.OTP_EXPIRY_MINUTES} minutes</p>
               </div>
+              <p style="color:#6B7280;font-size:14px;">If you are not expecting a device, ignore this email.</p>
             `)
           );
         } catch (emailErr) {
@@ -409,21 +429,21 @@ class OwnershipTransferService {
           success: true,
           requiresBuyerOtp: true,
           transferId: transfer.id,
-          // In non-production, expose OTP to ease local testing if email fails
-          devOtpCode: (process.env.NODE_ENV !== 'production') ? otpCode : undefined,
           message: 'Verification code sent to your email'
         };
       }
 
-      // Verify buyer OTP if provided
-      if (!buyerOtpCode) {
-        return {
-          success: false,
-          error: 'Buyer verification code is required'
-        };
+      // Step 2: check the buyer's code
+      if (transfer.status !== 'awaiting_buyer_otp' || transfer.buyer_otp_user_id !== buyerUserId) {
+        return { success: false, error: 'Request a verification code first' };
       }
 
-      if (transfer.buyer_otp_code !== buyerOtpCode) {
+      if ((transfer.buyer_otp_attempts || 0) >= this.MAX_OTP_ATTEMPTS) {
+        return { success: false, error: 'Too many wrong codes. Request a new code.' };
+      }
+
+      if (String(transfer.buyer_otp_code) !== String(buyerOtpCode)) {
+        await Database.query('UPDATE ownership_transfers SET buyer_otp_attempts = COALESCE(buyer_otp_attempts, 0) + 1 WHERE id = ?', [transfer.id]).catch(() => {});
         return {
           success: false,
           error: 'Invalid buyer verification code'
@@ -452,35 +472,37 @@ class OwnershipTransferService {
         };
       }
 
-      // Update device ownership
-      await Database.update(
-        'devices',
-        {
-          user_id: buyerUserId,
-          updated_at: new Date()
-        },
-        'id = ?',
-        [transfer.device_id]
-      );
+      if (device.user_id !== transfer.from_user_id) {
+        return { success: false, error: 'The seller no longer owns this device' };
+      }
+      if (['stolen', 'lost'].includes(device.status)) {
+        return { success: false, error: 'This device has been reported stolen or lost and cannot be transferred' };
+      }
+      if (device.ownership_level === 'disputed') {
+        return { success: false, error: 'This item has an open ownership claim and cannot be transferred right now' };
+      }
 
-      // Update transfer status
-      await Database.update(
-        'ownership_transfers',
-        {
-          to_user_id: buyerUserId,
-          status: 'completed',
-          completed_at: new Date(),
-          updated_at: new Date()
-        },
-        'id = ?',
-        [transfer.id]
-      );
+      // Claim the transfer and move ownership in one transaction
+      const moved = await Database.transaction(async (conn) => {
+        const [claim] = await conn.execute(
+          "UPDATE ownership_transfers SET to_user_id = ?, status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'awaiting_buyer_otp'",
+          [buyerUserId, transfer.id]
+        );
+        if (claim.affectedRows !== 1) return false;
+        await conn.execute(
+          "UPDATE devices SET user_id = ?, status = 'verified', updated_at = NOW() WHERE id = ? AND user_id = ?",
+          [buyerUserId, transfer.device_id, transfer.from_user_id]
+        );
+        return true;
+      });
+      if (!moved) {
+        return { success: false, error: 'This transfer has already been completed' };
+      }
+      // The buyer stays a verified owner only if the seller was one
+      await require('./OwnershipProofService').carryOverLevel(transfer.device_id, device.ownership_level);
 
       // Get user details for notifications
-      const [seller, buyer] = await Promise.all([
-        Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [transfer.from_user_id]),
-        Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [buyerUserId])
-      ]);
+      const seller = await Database.selectOne('users', `${nameSelectColumns()}, email`, 'id = ?', [transfer.from_user_id]);
 
       // Send completion notifications (do not fail transfer if email sending errors occur)
       try {
@@ -533,6 +555,7 @@ class OwnershipTransferService {
   // Expire transfer
   async expireTransfer(transferId) {
     try {
+      const t = await Database.selectOne('ownership_transfers', 'device_id', 'id = ?', [transferId]);
       await Database.update(
         'ownership_transfers',
         {
@@ -542,6 +565,13 @@ class OwnershipTransferService {
         'id = ?',
         [transferId]
       );
+      // Give the device back to its normal state so the owner can try again
+      if (t) {
+        await Database.query(
+          "UPDATE devices SET status = 'verified', updated_at = NOW() WHERE id = ? AND status = 'pending_transfer'",
+          [t.device_id]
+        );
+      }
 
       // Log expiration
       await Database.logAudit(
@@ -743,7 +773,7 @@ class OwnershipTransferService {
     try {
       const device = await Database.selectOne(
         'devices',
-        'status',
+        'status, ownership_level',
         'id = ?',
         [deviceId]
       );
@@ -754,6 +784,10 @@ class OwnershipTransferService {
 
       if (device.status === 'stolen' || device.status === 'lost') {
         return { eligible: false, reason: 'Cannot transfer stolen or lost devices' };
+      }
+
+      if (device.ownership_level === 'disputed') {
+        return { eligible: false, reason: 'This item has an open ownership claim. It can be transferred once our team resolves it.' };
       }
 
       if (device.status !== 'verified') {
@@ -890,7 +924,7 @@ class OwnershipTransferService {
     try {
       const expiredTransfers = await Database.query(`
         SELECT id FROM ownership_transfers
-        WHERE status IN ('initiated', 'otp_verified', 'active')
+        WHERE status IN ('initiated', 'otp_verified', 'active', 'awaiting_buyer_otp')
         AND expires_at < NOW()
       `);
 
@@ -933,15 +967,15 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-          <h1>ðŸ” Device Transfer Verification</h1>
+          <h1>Device Transfer Verification</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Verify Your Device Transfer</h2>
-          <p>Hello ${transfer.seller_display_name},</p>
+          <p>Hello ${escapeHtml(transfer.seller_display_name)},</p>
           <p>You have initiated a transfer for your device:</p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>${transfer.brand} ${transfer.model}</h3>
+            <h3>${escapeHtml(transfer.brand)} ${escapeHtml(transfer.model)}</h3>
             <p><strong>Expires:</strong> ${new Date(transfer.expires_at).toLocaleString()}</p>
           </div>
           
@@ -965,15 +999,15 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-          <h1>âœ… Transfer Activated</h1>
+          <h1>✅ Transfer Activated</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Your Device Transfer is Ready</h2>
-          <p>Hello ${transfer.seller_display_name},</p>
+          <p>Hello ${escapeHtml(transfer.seller_display_name)},</p>
           <p>Your device transfer has been activated and is ready for the buyer:</p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>${transfer.brand} ${transfer.model}</h3>
+            <h3>${escapeHtml(transfer.brand)} ${escapeHtml(transfer.model)}</h3>
             <p><strong>Valid Until:</strong> ${new Date(transfer.expires_at).toLocaleString()}</p>
           </div>
           
@@ -997,7 +1031,7 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #646cff; color: white; padding: 20px; text-align: center;">
-          <h1>ðŸ“± Device Available for Transfer</h1>
+          <h1>📱 Device Available for Transfer</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Device Ready for Ownership Transfer</h2>
@@ -1005,18 +1039,17 @@ class OwnershipTransferService {
           <p>A device has been prepared for transfer to you:</p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>${transfer.brand} ${transfer.model}</h3>
-            <p><strong>Seller:</strong> ${transfer.seller_display_name}</p>
-            ${transfer.sale_price ? `<p><strong>Price:</strong> $${transfer.sale_price}</p>` : ''}
+            <h3>${escapeHtml(transfer.brand)} ${escapeHtml(transfer.model)}</h3>
+            <p><strong>Seller:</strong> ${escapeHtml(transfer.seller_display_name)}</p>
+            ${transfer.sale_price ? `<p><strong>Price:</strong> ₦${escapeHtml(Number(transfer.sale_price).toLocaleString('en-NG'))}</p>` : ''}
             <p><strong>Transfer Code:</strong> <span style="font-family: monospace; color: #646cff; letter-spacing: 0.08em;">${transfer.transfer_code}</span></p>
           </div>
           
           <p><strong>To claim ownership:</strong></p>
           <ol>
-            <li>Log into your Prove Ownership account</li>
-            <li>Go to "Device Transfer" â†’ Claim Transfer</li>
-            <li>Enter the 12-character transfer code shown above</li>
-            <li>If prompted, enter the Email OTP we send you</li>
+            <li>Log into your Prove Ownership account (or create one with this email address)</li>
+            <li>Open <a href="${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/transfer?code=${encodeURIComponent(transfer.transfer_code)}">Receive a device</a>, or go to Transfers → Receive and enter the code above</li>
+            <li>Enter the 6-digit code we email you to confirm</li>
           </ol>
           
           <p><strong>Important:</strong> The transfer code expires at ${new Date(transfer.expires_at).toLocaleString()}.</p>
@@ -1146,7 +1179,7 @@ class OwnershipTransferService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #10b981; color: white; padding: 20px; text-align: center;">
-          <h1>ðŸŽ‰ Transfer Complete</h1>
+          <h1>Transfer Complete</h1>
         </div>
         <div style="padding: 30px; background: #f9f9f9;">
           <h2>Device Ownership ${isSeller ? 'Transferred' : 'Received'}</h2>
@@ -1154,11 +1187,11 @@ class OwnershipTransferService {
           <p>The device ownership transfer has been completed successfully:</p>
           
           <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>${device.brand} ${device.model}</h3>
+            <h3>${escapeHtml(device.brand)} ${escapeHtml(device.model)}</h3>
             <p><strong>Transfer Code:</strong> ${transfer.transfer_code}</p>
-            <p><strong>${isSeller ? 'Buyer' : 'Seller'}:</strong> ${getDisplayName(otherParty)} (${otherParty.email})</p>
+            <p><strong>${isSeller ? 'Buyer' : 'Seller'}:</strong> ${escapeHtml(getDisplayName(otherParty))} (${otherParty.email})</p>
             <p><strong>Completed:</strong> ${new Date().toLocaleString()}</p>
-            ${transfer.sale_price ? `<p><strong>Sale Price:</strong> $${transfer.sale_price}</p>` : ''}
+            ${transfer.sale_price ? `<p><strong>Sale Price:</strong> ₦${escapeHtml(Number(transfer.sale_price).toLocaleString('en-NG'))}</p>` : ''}
           </div>
           
           ${isSeller ? `

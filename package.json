@@ -13,7 +13,10 @@
     "migrate": "node scripts/run-migration.js",
     "migrate:enhanced": "node scripts/run-migration.js enhanced-features",
     "migrate:status": "node scripts/run-migration.js status",
-    "migrate:all": "node scripts/run-migration.js run-all"
+    "migrate:all": "node scripts/run-migration.js run-all",
+    "test:system": "jest -c jest.system.config.js",
+    "test:system:sweep": "jest -c jest.system.config.js tests/system/01-route-sweep.test.js",
+    "test:e2e-server": "node tests/e2e/server.js"
   },
   "dependencies": {
     "axios": "^1.18.1",

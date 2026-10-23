@@ -1,106 +1,104 @@
 const express = require('express');
 const router = express.Router();
 const Database = require('../config');
-const RevenueService = require('../services/RevenueService');
 const notifier = require('../services/EnhancedNotificationService');
 const crypto = require('crypto');
-const MonifyService = require('../services/MonifyService');
+const { escapeHtml } = require('../utils/escape-html');
+
+// IMPORTANT: this router is mounted in app.js BEFORE express.json(), so the
+// body below is the exact raw bytes Paystack signed.
 
 // POST /api/payments/webhook/paystack - Paystack webhook
-router.post('/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/paystack', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+  if (!secret) {
+    console.error('Paystack webhook received but PAYSTACK_SECRET_KEY is not set');
+    return res.status(500).json({ error: 'Payments are not configured' });
+  }
+
+  const signature = String(req.headers['x-paystack-signature'] || '');
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
+  const expected = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
+
+  const sigOk = signature.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  if (!sigOk) {
+    return res.status(400).json({ error: 'Invalid signature' });
+  }
+
+  let event;
   try {
-    const secret = process.env.PAYSTACK_SECRET_KEY;
-    const signature = req.headers['x-paystack-signature'];
-    const rawBody = req.body;
+    event = JSON.parse(rawBody.toString('utf8'));
+  } catch (e) {
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
 
-    const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
-    if (hash !== signature) {
-      return res.status(400).json({ error: 'Invalid signature' });
+  // Acknowledge quickly; Paystack retries on non-2xx
+  res.sendStatus(200);
+
+  try {
+    if (event.event === 'charge.success' && event.data) {
+      const { reference, amount, currency } = event.data;
+      await handlePaymentSuccess(reference, Number(amount) / 100, currency || 'NGN');
     }
-
-    const event = JSON.parse(rawBody);
-
-    if (event.event === 'charge.success') {
-      const { reference, status, amount, metadata } = event.data;
-      await handlePaymentSuccess(reference, status, amount / 100, metadata);
-    }
-
-    res.sendStatus(200);
   } catch (error) {
-    console.error('Paystack webhook error:', error);
-    res.status(500).json({ error: 'Webhook processing failed' });
+    console.error('Paystack webhook processing error:', error);
   }
 });
 
-// POST /api/payments/webhook/monify - Monify webhook
-router.post('/monify', express.json(), async (req, res) => {
-  try {
-    const signature = req.headers['x-monify-signature'];
-    const timestamp = req.headers['x-monify-timestamp'];
+async function handlePaymentSuccess(reference, amountPaid, currency) {
+  if (!reference) return;
 
-    if (!MonifyService.verifyWebhookSignature(req.body, signature, timestamp)) {
-      return res.status(400).json({ error: 'Invalid signature' });
+  // 1) Fee invoices (device check, report, NIN, recovery, onboarding ...)
+  const invoice = await Database.selectOne('payment_invoices', '*', 'reference = ?', [reference]);
+  if (invoice) {
+    if (invoice.status === 'completed') return; // already processed (idempotent)
+    if (currency !== 'NGN' || amountPaid + 0.001 < Number(invoice.amount)) {
+      console.error(`Webhook amount mismatch for ${reference}: paid ${amountPaid} ${currency}, expected ${invoice.amount} NGN`);
+      return;
     }
-
-    const event = req.body;
-
-    if (event.eventType === 'SUCCESSFUL_TRANSACTION') {
-      const { paymentReference, amountPaid } = event.transactionInformation;
-      await handlePaymentSuccess(paymentReference, 'success', parseFloat(amountPaid), event.customerInformation);
-    }
-
-    res.sendStatus(200);
-  } catch (error) {
-    console.error('Monify webhook error:', error);
-    res.status(500).json({ error: 'Webhook processing failed' });
-  }
-});
-
-async function handlePaymentSuccess(reference, status, amount, metadata) {
-  try {
-    const invoice = await Database.selectOne('payment_invoices', '*', 'reference = ?', [reference]);
-    if (!invoice || invoice.status === 'completed') return;
-
-    await Database.transaction(async (connection) => {
-      await connection.execute(
-        'UPDATE payment_invoices SET status = ?, paid_at = NOW() WHERE id = ?',
-        ['completed', invoice.id]
-      );
-
-      await connection.execute(
-        `INSERT INTO transactions (id, user_id, type, amount, status, reference, related_entity_id, description, created_at)
-         VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, NOW())`,
-        [
-          Database.generateUUID(),
-          invoice.user_id,
-          invoice.purpose,
-          amount,
-          reference,
-          invoice.metadata ? JSON.parse(invoice.metadata).device_id || null : null,
-          `Payment for ${invoice.purpose}`
-        ]
-      );
-    });
+    const result = await Database.query(
+      "UPDATE payment_invoices SET status = 'completed', paid_at = NOW() WHERE id = ? AND status <> 'completed'",
+      [invoice.id]
+    );
+    if (!result || result.affectedRows !== 1) return;
 
     const user = await Database.selectOne('users', 'email, name', 'id = ?', [invoice.user_id]);
     if (user?.email) {
       await notifier.sendEmail(user.email, 'Payment Confirmed', `
-        <p>Hi ${user.name},</p>
-        <p>Your payment of ₦${amount} for ${invoice.purpose} has been confirmed.</p>
-        <p>Reference: ${reference}</p>
-      `);
+        <p>Hi ${escapeHtml(user.name)},</p>
+        <p>Your payment of ₦${escapeHtml(amountPaid)} for ${escapeHtml(invoice.purpose)} has been confirmed.</p>
+        <p>Reference: ${escapeHtml(reference)}</p>
+      `).catch(() => {});
     }
-  } catch (error) {
-    console.error('handlePaymentSuccess error:', error);
+    return;
+  }
+
+  // 2) Marketplace purchases (buyer closed the tab before returning)
+  const MarketplaceService = require('../services/MarketplaceService');
+  const txs = await Database.select('transactions', 'id, status', 'reference = ?', [reference]);
+  if (!txs.length || txs.every((t) => t.status === 'completed')) return;
+  try {
+    if (txs.length > 1 || reference.startsWith('BUL')) {
+      await MarketplaceService.bulkCompletePurchase(reference);
+    } else {
+      await MarketplaceService.completePurchase(reference);
+    }
+  } catch (err) {
+    console.error(`Webhook could not complete purchase ${reference}:`, err.message);
   }
 }
 
-// GET /api/payments/webhook/status/:reference - Check payment status
-router.get('/status/:reference', async (req, res) => {
+// GET /api/payments/webhook/status/:reference - payment status (owner only)
+router.get('/status/:reference', express.json(), async (req, res) => {
   try {
+    const { authenticateToken } = require('../middleware/auth');
+    await new Promise((resolve) => authenticateToken(req, res, resolve));
+    if (!req.user) return undefined; // middleware already answered
+
     const { reference } = req.params;
     const invoice = await Database.selectOne('payment_invoices', '*', 'reference = ?', [reference]);
-    if (!invoice) {
+    if (!invoice || (invoice.user_id !== req.user.id && !['admin', 'super_admin'].includes(req.user.role))) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
     res.json({

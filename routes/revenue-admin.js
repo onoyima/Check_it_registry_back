@@ -3,65 +3,80 @@ const router = express.Router();
 const Database = require('../config');
 const RevenueService = require('../services/RevenueService');
 const SecurityService = require('../services/SecurityService');
-const { authenticateToken } = require('../middleware/auth');
+const PaystackService = require('../services/PaystackService');
+const { authenticateToken, requireRole } = require('../middleware/auth');
 
-const requireAdmin = async (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'Access token required' });
-  try {
-    const token = authHeader.split(' ')[1];
-    const decoded = Database.verifyJWT(token);
-    const user = await Database.selectOne('users', 'id, role', 'id = ?', [decoded.id]);
-    if (!user || (user.role !== 'admin' && user.role !== 'super_admin')) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-    req.user = user;
-    next();
-  } catch (error) {
-    return res.status(403).json({ error: 'Invalid token' });
-  }
-};
+// Admin check built on the shared middleware (token revocation, suspension)
+const requireAdmin = [authenticateToken, requireRole(['admin', 'super_admin'])];
 
-// POST /create-invoice - Create a payment invoice for a fee (used by PaymentGate / fee-gated flows)
+// POST /create-invoice - Start paying a fee (used by the PaymentGate).
+// The amount always comes from the fee settings, never from the browser.
+// Returns a Paystack page to pay on; the paid action is unlocked later by
+// passing the invoice reference, which the server checks with Paystack.
 router.post('/create-invoice', authenticateToken, async (req, res) => {
   try {
-    const { fee_type, amount, currency, description } = req.body;
-
-    if (!fee_type || !amount || amount <= 0) {
-      return res.status(400).json({ error: 'fee_type and a positive amount are required' });
+    const feeKey = RevenueService.feeBase(req.body.fee_type) + '_fee';
+    if (!RevenueService.PAYABLE_FEES.includes(feeKey)) {
+      return res.status(400).json({ error: 'Unknown fee type' });
+    }
+    const amount = await RevenueService.getFee(feeKey);
+    if (!(amount > 0)) {
+      return res.json({ success: true, requiresPayment: false, amount: 0 });
     }
 
-    const reference = `${fee_type.toUpperCase()}-${req.user.id.slice(0, 8)}-${Date.now()}`;
+    const reference = PaystackService.generateReference('FEE');
+    const description = typeof req.body.description === 'string' ? req.body.description.slice(0, 200) : '';
     const invoiceId = await RevenueService.createPaymentInvoice(
-      req.user.id,
-      amount,
-      fee_type,
-      reference,
-      { fee_type, amount, currency: currency || 'NGN', description: description || '' }
+      req.user.id, amount, feeKey, reference, { fee_type: feeKey, description }
     );
 
-    await Database.logAudit(
-      req.user.id,
-      'INVOICE_CREATED',
-      'payment_invoices',
-      invoiceId,
-      null,
-      { fee_type, amount, reference },
-      req.ip
-    );
+    const frontend = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    let authorizationUrl = null;
+    try {
+      const init = await PaystackService.initializeTransaction({
+        email: req.user.email,
+        amount,
+        reference,
+        metadata: { invoiceId, fee_type: feeKey, userId: req.user.id },
+        callbackUrl: `${frontend}/payment/callback?kind=fee`,
+      });
+      authorizationUrl = init?.data?.authorization_url || null;
+    } catch (err) {
+      console.error('Paystack init failed for fee invoice:', err.response?.data || err.message);
+      return res.status(502).json({ error: 'Payment provider is unavailable. Please try again shortly.' });
+    }
+
+    await Database.logAudit(req.user.id, 'INVOICE_CREATED', 'payment_invoices', invoiceId, null,
+      { fee_type: feeKey, amount, reference }, req.ip).catch(() => {});
 
     res.status(201).json({
       success: true,
+      requiresPayment: true,
       invoice_id: invoiceId,
       reference,
       amount,
-      currency: currency || 'NGN',
-      purpose: fee_type,
-      status: 'pending'
+      currency: 'NGN',
+      purpose: feeKey,
+      status: 'pending',
+      authorization_url: authorizationUrl,
     });
   } catch (error) {
     console.error('Create invoice error:', error);
     res.status(500).json({ error: 'Failed to create invoice' });
+  }
+});
+
+// POST /invoices/verify - Has this fee invoice been paid? (checks Paystack)
+router.post('/invoices/verify', authenticateToken, async (req, res) => {
+  try {
+    const { reference } = req.body;
+    if (!reference) return res.status(400).json({ error: 'reference is required' });
+    const invoice = await Database.selectOne('payment_invoices', '*', 'reference = ? AND user_id = ?', [reference, req.user.id]);
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    const paid = await RevenueService.confirmInvoicePayment(invoice);
+    res.json({ reference, paid, status: paid ? 'completed' : invoice.status, amount: parseFloat(invoice.amount) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to verify payment' });
   }
 });
 
@@ -244,22 +259,6 @@ router.put('/provider', requireAdmin, async (req, res) => {
     res.json({ success: true, provider });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update provider' });
-  }
-});
-
-router.post('/create-invoice', authenticateToken, async (req, res) => {
-  try {
-    const { fee_type, amount, currency, description } = req.body;
-    if (!fee_type || amount === undefined) {
-      return res.status(400).json({ error: 'fee_type and amount are required' });
-    }
-    const reference = `INV-${req.user.id}-${Date.now()}`;
-    const invoiceId = await RevenueService.createPaymentInvoice(
-      req.user.id, amount, fee_type, reference, { description }
-    );
-    res.json({ invoice_id: invoiceId, reference, amount, currency: currency || 'NGN' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create invoice' });
   }
 });
 

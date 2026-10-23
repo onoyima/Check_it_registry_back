@@ -329,7 +329,7 @@ const MIGRATIONS = [
     name: '012_create_email_verification_tokens',
     sql: [
       `CREATE TABLE IF NOT EXISTS email_verification_tokens (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
         user_id VARCHAR(36) NOT NULL,
         token VARCHAR(255) NOT NULL,
         expires_at TIMESTAMP NOT NULL,
@@ -502,6 +502,10 @@ const MIGRATIONS = [
     sql: [
       // Add soft-delete columns to users
       `ALTER TABLE users ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL`,
+      `ALTER TABLE payment_invoices ADD COLUMN consumed_at TIMESTAMP NULL DEFAULT NULL`,
+      `ALTER TABLE ownership_transfers ADD COLUMN otp_attempts INT NOT NULL DEFAULT 0`,
+      `ALTER TABLE ownership_transfers ADD COLUMN buyer_otp_attempts INT NOT NULL DEFAULT 0`,
+      `ALTER TABLE ownership_transfers ADD COLUMN buyer_otp_user_id VARCHAR(36) NULL DEFAULT NULL`,
       `ALTER TABLE users ADD COLUMN deletion_reason TEXT DEFAULT NULL`,
       `ALTER TABLE users ADD COLUMN original_email VARCHAR(255) DEFAULT NULL`,
       // Add soft-delete columns to devices
@@ -597,11 +601,11 @@ const MIGRATIONS = [
     seed: async () => {
       // Add FK constraints gracefully
       await db.query('ALTER TABLE security_questions ADD CONSTRAINT sq_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE').catch(() => {});
-      await db.query('ALTER TABLE account_deletions ADD CONSTRAINT ad_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL').catch(() => {});
-      await db.query('ALTER TABLE device_deletions ADD CONSTRAINT dd_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL').catch(() => {});
+      // (no FK to users here: archive rows must outlive the user, and SET NULL on a NOT NULL column is refused)
+      // (no FK to users here: archive rows must outlive the user, and SET NULL on a NOT NULL column is refused)
       await db.query('ALTER TABLE data_export_audit ADD CONSTRAINT dea_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE').catch(() => {});
       await db.query('ALTER TABLE device_ownership_history ADD CONSTRAINT doh_fk_device FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE').catch(() => {});
-      await db.query('ALTER TABLE device_ownership_history ADD CONSTRAINT doh_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL').catch(() => {});
+      // (no FK to users here: archive rows must outlive the user, and SET NULL on a NOT NULL column is refused)
       // Seed default security questions in system_settings
       const defaultQuestions = JSON.stringify([
         "What was the name of your first pet?",
@@ -617,6 +621,115 @@ const MIGRATIONS = [
         VALUES (UUID(), 'security_questions', ?, 'json', 'Available security questions for account deletion', false)`, [defaultQuestions]);
       console.log('  ✓ Archive, soft-delete, security questions, and ownership history tables created');
     }
+  },
+  {
+    // Columns the code relies on that were only ever added by hand-run SQL
+    // files in /migrations. Without them most user queries fail. Idempotent:
+    // "Duplicate column" errors are ignored by the runner.
+    name: '016b_core_columns_from_manual_sql',
+    sql: [
+      'ALTER TABLE users ADD COLUMN first_name VARCHAR(50) DEFAULT NULL',
+      'ALTER TABLE users ADD COLUMN middle_name VARCHAR(50) DEFAULT NULL',
+      'ALTER TABLE users ADD COLUMN last_name VARCHAR(50) DEFAULT NULL',
+      "ALTER TABLE users ADD COLUMN kyc_status ENUM('unverified','pending','verified','failed') DEFAULT 'unverified'",
+      'ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT FALSE',
+      'ALTER TABLE users ADD COLUMN verification_badge_visible BOOLEAN DEFAULT FALSE',
+      'ALTER TABLE users ADD COLUMN caution_flag BOOLEAN DEFAULT FALSE',
+      'ALTER TABLE users ADD COLUMN verified_full_name VARCHAR(255)',
+      'ALTER TABLE users ADD COLUMN verified_dob DATE',
+      'ALTER TABLE users ADD COLUMN verified_gender VARCHAR(50)',
+      'ALTER TABLE users ADD COLUMN verified_photo_url TEXT',
+      'ALTER TABLE users ADD COLUMN payout_bank_name VARCHAR(255) DEFAULT NULL',
+      'ALTER TABLE users ADD COLUMN payout_account_number VARCHAR(20) DEFAULT NULL',
+      'ALTER TABLE users ADD COLUMN payout_account_name VARCHAR(255) DEFAULT NULL',
+      'ALTER TABLE transactions ADD COLUMN description TEXT DEFAULT NULL',
+      "ALTER TABLE reports ADD COLUMN payment_status ENUM('pending','completed','free','failed') DEFAULT 'free'",
+      'ALTER TABLE reports ADD COLUMN payment_reference VARCHAR(255) DEFAULT NULL',
+      'ALTER TABLE reports ADD COLUMN payment_amount DECIMAL(10,2) DEFAULT NULL',
+      'ALTER TABLE reports ADD COLUMN report_number INT DEFAULT NULL',
+      'ALTER TABLE reports ADD COLUMN kyc_performed BOOLEAN DEFAULT FALSE',
+      "ALTER TABLE reports ADD COLUMN kyc_result ENUM('verified','failed','skipped') DEFAULT 'skipped'",
+      `CREATE TABLE IF NOT EXISTS kyc_batches (
+        id CHAR(36) PRIMARY KEY,
+        batch_status ENUM('pending','processing','completed','failed') DEFAULT 'pending',
+        total_records INT DEFAULT 0, successful_verifications INT DEFAULT 0, failed_verifications INT DEFAULT 0,
+        started_at TIMESTAMP NULL, completed_at TIMESTAMP NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS kyc_verifications (
+        id CHAR(36) PRIMARY KEY, user_id VARCHAR(36) NOT NULL, nin TEXT NOT NULL,
+        nin_status ENUM('pending','verified','failed') DEFAULT 'pending', face_match_score FLOAT, liveness_passed BOOLEAN,
+        verification_batch_id CHAR(36), verification_response JSON, provider VARCHAR(50) DEFAULT NULL, verified_at TIMESTAMP NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_kyc_user (user_id)
+      )`,
+      'ALTER TABLE kyc_verifications ADD COLUMN provider VARCHAR(50) DEFAULT NULL',
+      // The code stores UUIDs as ids; databases created from the old SQL file
+      // have an INT id, so email verification links could never be created.
+      'ALTER TABLE email_verification_tokens MODIFY COLUMN id VARCHAR(36) NOT NULL',
+      // The code logs resource types such as 'security' and 'http' that the
+      // old ENUM did not allow, which crashed admin/police sign-in. Plain text
+      // keeps every existing value.
+      "ALTER TABLE audit_logs MODIFY COLUMN resource_type VARCHAR(50) DEFAULT 'system'",
+      "ALTER TABLE audit_logs MODIFY COLUMN status VARCHAR(20) DEFAULT 'success'",
+      // Device fingerprints (64 chars) are logged as resource ids
+      'ALTER TABLE audit_logs MODIFY COLUMN resource_id VARCHAR(128) DEFAULT NULL',
+      'ALTER TABLE audit_logs MODIFY COLUMN record_id VARCHAR(128) DEFAULT NULL',
+      // Police accounts are linked to their agency; several pages read this
+      "ALTER TABLE users ADD COLUMN agency_id VARCHAR(36) DEFAULT NULL",
+      // Checks of numbers that are NOT registered have no device to point at;
+      // the NOT NULL column made every such check fail with a server error.
+      'ALTER TABLE device_check_logs MODIFY COLUMN device_id VARCHAR(36) NULL',
+      // The listing form offers excellent/good/fair/poor/parts, but the column
+      // only allowed new/used/refurbished, so creating any listing failed.
+      "ALTER TABLE marketplace_listings MODIFY COLUMN device_condition VARCHAR(20) NOT NULL DEFAULT 'used'",
+      // The buyer's confirmation code is stored here; without these columns
+      // no ownership transfer could ever be completed.
+      'ALTER TABLE ownership_transfers ADD COLUMN buyer_otp_code VARCHAR(12) NULL',
+      'ALTER TABLE ownership_transfers ADD COLUMN buyer_otp_expires_at DATETIME NULL',
+      // The admin "System settings" page groups settings by category
+      "ALTER TABLE system_settings ADD COLUMN category VARCHAR(50) NOT NULL DEFAULT 'general'",
+      // Status/type values the code writes that the old ENUM lists refused
+      // (transfers could not reach "awaiting buyer", recovery payments could
+      // not fail cleanly, onboarding commissions could not be recorded).
+      "ALTER TABLE ownership_transfers MODIFY COLUMN status VARCHAR(30) DEFAULT 'initiated'",
+      "ALTER TABLE recovery_services MODIFY COLUMN status VARCHAR(30) DEFAULT 'payment_pending'",
+      "ALTER TABLE transactions MODIFY COLUMN type VARCHAR(50) NOT NULL",
+      "ALTER TABLE users ADD COLUMN department VARCHAR(255) DEFAULT NULL",
+      // Used by fraud detection and critical-action logging; never created before
+      `CREATE TABLE IF NOT EXISTS security_events (
+        id VARCHAR(36) PRIMARY KEY,
+        event_type VARCHAR(100) NOT NULL,
+        severity VARCHAR(20) NOT NULL DEFAULT 'info',
+        user_id VARCHAR(36) NULL,
+        details JSON NULL,
+        ip_address VARCHAR(64) NULL,
+        user_agent VARCHAR(500) NULL,
+        resolved TINYINT(1) DEFAULT 0,
+        latitude DECIMAL(10,7) NULL,
+        longitude DECIMAL(10,7) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_security_user_created (user_id, created_at),
+        KEY idx_security_type (event_type),
+        KEY idx_security_created (created_at),
+        KEY idx_security_severity_created (severity, created_at)
+      )`,
+      `CREATE TABLE IF NOT EXISTS lea_threads (
+        id VARCHAR(36) PRIMARY KEY, subject VARCHAR(255) NOT NULL, case_id VARCHAR(36) DEFAULT NULL,
+        status ENUM('active','archived','closed') DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_case_id (case_id), INDEX idx_status (status)
+      )`,
+      `CREATE TABLE IF NOT EXISTS lea_thread_participants (
+        id VARCHAR(36) PRIMARY KEY, thread_id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL,
+        role ENUM('lea','member','admin') DEFAULT 'member', joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_read_at TIMESTAMP NULL DEFAULT NULL,
+        UNIQUE KEY unique_thread_user (thread_id, user_id), INDEX idx_user_id (user_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS lea_thread_messages (
+        id VARCHAR(36) PRIMARY KEY, thread_id VARCHAR(36) NOT NULL, sender_id VARCHAR(36) NOT NULL, content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_thread_id (thread_id), INDEX idx_sender_id (sender_id)
+      )`,
+    ],
   },
   {
     // R2 fix — backfill split first/middle/last name fields from the legacy single 'name'
@@ -908,6 +1021,127 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // Security hardening (Oct 2026 review):
+    //  - file_owners: who uploaded each private file, so proofs / KYC selfies /
+    //    evidence are served only to their owner, admins and police.
+    //  - users.token_version: bumped on logout, password change/reset and
+    //    suspension so old login tokens stop working immediately.
+    //  - users.suspended_at: suspension is now actually stored and enforced.
+    name: '023_security_hardening',
+    sql: [
+      `CREATE TABLE IF NOT EXISTS file_owners (
+        file_key VARCHAR(255) NOT NULL PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_file_owners_user (user_id)
+      )`,
+      `ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN suspended_at TIMESTAMP NULL DEFAULT NULL`,
+      `ALTER TABLE users ADD COLUMN suspension_reason VARCHAR(500) NULL DEFAULT NULL`,
+      `ALTER TABLE users ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL`,
+    ],
+  },
+  {
+    // Ownership proof review: every item gets an ownership level
+    // (registered -> proof_submitted -> verified_owner, or disputed), owners
+    // upload category-specific proof, admins review it, and anyone who says
+    // an item registered to someone else is theirs can open a dispute.
+    name: '024_ownership_proof_review',
+    sql: [
+      `ALTER TABLE devices ADD COLUMN ownership_level VARCHAR(20) NOT NULL DEFAULT 'registered'`,
+      `ALTER TABLE devices ADD COLUMN ownership_verified_at TIMESTAMP NULL DEFAULT NULL`,
+      `ALTER TABLE devices ADD COLUMN ownership_verified_by VARCHAR(36) NULL DEFAULT NULL`,
+      `CREATE TABLE IF NOT EXISTS ownership_disputes (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(36) NOT NULL,
+        claimant_id VARCHAR(36) NOT NULL,
+        owner_id VARCHAR(36) NOT NULL,
+        statement TEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'open',
+        previous_level VARCHAR(20) NULL,
+        resolution_note TEXT NULL,
+        resolved_by VARCHAR(36) NULL,
+        resolved_at TIMESTAMP NULL DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_disputes_device (device_id, status),
+        KEY idx_disputes_claimant (claimant_id),
+        KEY idx_disputes_status (status, created_at)
+      )`,
+      `CREATE TABLE IF NOT EXISTS ownership_proofs (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(36) NOT NULL,
+        user_id VARCHAR(36) NOT NULL,
+        dispute_id VARCHAR(36) NULL,
+        proof_type VARCHAR(30) NOT NULL DEFAULT 'other',
+        file_url VARCHAR(500) NOT NULL,
+        note VARCHAR(500) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        review_note VARCHAR(500) NULL,
+        reviewed_by VARCHAR(36) NULL,
+        reviewed_at TIMESTAMP NULL DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_proofs_device (device_id, user_id),
+        KEY idx_proofs_status (status, created_at),
+        KEY idx_proofs_dispute (dispute_id)
+      )`,
+      `CREATE INDEX idx_devices_ownership_level ON devices (ownership_level)`,
+    ],
+    seed: async () => {
+      // Items an admin already verified count as verified owners
+      await db.query(
+        "UPDATE devices SET ownership_level = 'verified_owner', ownership_verified_at = COALESCE(verified_at, NOW()), ownership_verified_by = verified_by WHERE verified_by IS NOT NULL AND status = 'verified'"
+      ).catch(() => {});
+      // Proofs uploaded at registration but never reviewed go into the queue
+      const rows = await db.query(
+        "SELECT id, user_id, proof_url FROM devices WHERE ownership_level = 'registered' AND proof_url LIKE '/uploads/proofs/%' AND status NOT IN ('released')"
+      ).catch(() => []);
+      for (const r of rows) {
+        await db.query(
+          "INSERT INTO ownership_proofs (id, device_id, user_id, proof_type, file_url, note, status) VALUES (UUID(), ?, ?, 'other', ?, 'Uploaded when the item was registered', 'pending')",
+          [r.id, r.user_id, r.proof_url]
+        ).catch(() => {});
+        await db.query("UPDATE devices SET ownership_level = 'proof_submitted' WHERE id = ?", [r.id]).catch(() => {});
+      }
+    },
+  },
+  {
+    // Schema fixes found in the database dump (Oct 2026 review):
+    //  - devices.status had no 'released', so "Release device" failed;
+    //  - devices.category had no 'smart_watch';
+    //  - a CHECK constraint required an IMEI or serial, so vehicles (VIN)
+    //    and jewellery (certificate/description) could never be saved.
+    name: '025_device_schema_fixes',
+    sql: [
+      "ALTER TABLE devices MODIFY COLUMN status ENUM('verified','unverified','stolen','lost','found','pending_transfer','released') DEFAULT 'unverified'",
+      "ALTER TABLE devices MODIFY COLUMN category ENUM('mobile_phone','computer','smart_watch','vehicle','electronics','jewelry','others') NOT NULL DEFAULT 'others'",
+      'ALTER TABLE devices DROP CONSTRAINT chk_imei_or_serial',
+    ],
+    seed: async () => {
+      // MySQL before 8.0.19 uses DROP CHECK instead
+      const left = await db.query("SELECT COUNT(*) AS n FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devices' AND CONSTRAINT_NAME = 'chk_imei_or_serial'").catch(() => [{ n: 0 }]);
+      if (left[0] && Number(left[0].n) > 0) {
+        await db.query('ALTER TABLE devices DROP CHECK chk_imei_or_serial').catch(() => {});
+      }
+    },
+  },
+  {
+    // Earlier steps could be marked "complete" even though some of their
+    // tables failed to create (their text columns used a different collation
+    // from users, so foreign keys were refused). Re-run those steps now that
+    // the runner matches the users table's collation. All statements are
+    // CREATE TABLE IF NOT EXISTS / ADD COLUMN, so nothing existing changes.
+    name: '026_repair_skipped_tables',
+    sql: [],
+    seed: async () => {
+      for (const name of ['007_add_performance_indexes', '008_revenue_and_security_tables', '013_add_device_nin_verification_and_free_reports', '015_business_verification_system', '016_archive_softdelete_security_questions']) {
+        const m = MIGRATIONS.find((x) => x.name === name);
+        if (!m) continue;
+        for (const sql of m.sql || []) await db.query(sql).catch(() => {});
+        if (m.seed) await m.seed().catch(() => {});
+      }
+    },
+  },
 ];
 
 async function runMigrations() {
@@ -921,6 +1155,25 @@ async function runMigrations() {
       run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // New tables must use the same charset/collation as `users`, otherwise
+  // MySQL/MariaDB refuse their foreign keys ("errno: 150"). Many CREATE TABLE
+  // statements don't say which to use, so add it here.
+  const baseQuery = db.query;
+  let usersCollation = null;
+  try {
+    const r = await baseQuery.call(db, "SELECT TABLE_COLLATION AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'");
+    usersCollation = r && r[0] && r[0].c;
+  } catch (_) { /* fresh database */ }
+  if (usersCollation) {
+    const charset = usersCollation.split('_')[0];
+    db.query = function (sql, params) {
+      if (typeof sql === 'string' && /^\s*CREATE\s+TABLE/i.test(sql) && !/COLLATE/i.test(sql)) {
+        sql = sql.replace(/;\s*$/, '').replace(/(DEFAULT\s+)?(CHARACTER\s+SET|CHARSET)\s*=?\s*\w+/gi, '') + ` DEFAULT CHARSET=${charset} COLLATE=${usersCollation}`;
+      }
+      return baseQuery.call(db, sql, params);
+    };
+  }
 
   for (const migration of MIGRATIONS) {
     try {
@@ -953,6 +1206,7 @@ async function runMigrations() {
     }
   }
 
+  db.query = baseQuery;
   console.log('Migrations complete.');
 }
 

@@ -1,5 +1,6 @@
 // Background Job Processor - Simple job queue without Redis
 const Database = require('../config');
+const { escapeHtml } = require('../utils/escape-html');
 const NotificationService = require('./NotificationService');
 const FileUploadService = require('./FileUploadService');
 
@@ -110,6 +111,14 @@ class BackgroundJobs {
 
   // Cleanup expired device transfers
   async cleanupExpiredTransfers() {
+    // Current transfer flow (ownership_transfers): expire and free the device
+    try {
+      const OwnershipTransferService = require('./OwnershipTransferService');
+      await OwnershipTransferService.cleanupExpiredTransfers();
+    } catch (err) {
+      console.error('Ownership transfer cleanup failed:', err.message);
+    }
+    // Legacy flow (device_transfers)
     try {
       const expiredTransfers = await Database.query(`
         SELECT dt.*, d.id as device_id
@@ -147,8 +156,8 @@ class BackgroundJobs {
             'Device Transfer Expired',
             `
               <h2>Device Transfer Expired</h2>
-              <p>Your device transfer request to <strong>${toUser.name}</strong> has expired.</p>
-              <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+              <p>Your device transfer request to <strong>${escapeHtml(toUser.name)}</strong> has expired.</p>
+              <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
               <p>You can initiate a new transfer if needed.</p>
             `,
             { type: 'transfer_expired' }
@@ -162,8 +171,8 @@ class BackgroundJobs {
             'Device Transfer Expired',
             `
               <h2>Device Transfer Expired</h2>
-              <p>The device transfer request from <strong>${fromUser.name}</strong> has expired.</p>
-              <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+              <p>The device transfer request from <strong>${escapeHtml(fromUser.name)}</strong> has expired.</p>
+              <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
               <p><strong>Transfer Code:</strong> ${transfer.transfer_code}</p>
             `,
             { type: 'transfer_expired' }

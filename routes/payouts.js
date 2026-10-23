@@ -5,14 +5,27 @@ const Database = require('../config');
 const PaystackService = require('../services/PaystackService');
 const PaymentService = require('../services/PaymentService');
 
+// Used when Paystack cannot be reached, so the payout form still works.
+// (Codes are Paystack's bank codes.)
+const FALLBACK_BANKS = [
+  ['Access Bank', '044'], ['Citibank Nigeria', '023'], ['Ecobank Nigeria', '050'], ['Fidelity Bank', '070'],
+  ['First Bank of Nigeria', '011'], ['First City Monument Bank', '214'], ['Globus Bank', '00103'], ['Guaranty Trust Bank', '058'],
+  ['Heritage Bank', '030'], ['Jaiz Bank', '301'], ['Keystone Bank', '082'], ['Kuda Bank', '50211'], ['Moniepoint MFB', '50515'],
+  ['OPay', '999992'], ['PalmPay', '999991'], ['Parallex Bank', '104'], ['Polaris Bank', '076'], ['Providus Bank', '101'],
+  ['Stanbic IBTC Bank', '221'], ['Standard Chartered Bank', '068'], ['Sterling Bank', '232'], ['SunTrust Bank', '100'],
+  ['Titan Trust Bank', '102'], ['Union Bank of Nigeria', '032'], ['United Bank For Africa', '033'], ['Unity Bank', '215'],
+  ['Wema Bank', '035'], ['Zenith Bank', '057'],
+].map(([name, code], i) => ({ id: i + 1, name, code, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), currency: 'NGN', active: true }));
+
 // GET /api/payments/banks — list Nigerian banks from Paystack
 router.get('/banks', authenticateToken, async (req, res) => {
   try {
     const result = await PaystackService.listBanks();
+    if (!Array.isArray(result?.data) || !result.data.length) throw new Error('empty bank list');
     res.json({ data: result.data });
   } catch (err) {
-    console.error('List banks error:', err);
-    res.status(500).json({ error: 'Failed to fetch banks' });
+    console.warn('List banks: Paystack unavailable, using the built-in list:', err.message);
+    res.json({ data: FALLBACK_BANKS, fallback: true });
   }
 });
 

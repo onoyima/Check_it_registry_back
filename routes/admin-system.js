@@ -847,12 +847,12 @@ router.get('/security-events', async (req, res) => {
     let params = [];
     
     if (severity) {
-      whereClause += ' AND severity = ?';
+      whereClause += ' AND se.severity = ?';
       params.push(severity);
     }
     
     if (eventType) {
-      whereClause += ' AND event_type = ?';
+      whereClause += ' AND se.event_type = ?';
       params.push(eventType);
     }
     
@@ -860,16 +860,16 @@ router.get('/security-events', async (req, res) => {
     let timeFilter = '';
     switch (timeRange) {
       case '1h':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)';
         break;
       case '24h':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)';
         break;
       case '7d':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
         break;
       case '30d':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
         break;
     }
     
@@ -992,12 +992,12 @@ router.post('/security-report', async (req, res) => {
     let params = [];
     
     if (severity) {
-      whereClause += ' AND severity = ?';
+      whereClause += ' AND se.severity = ?';
       params.push(severity);
     }
     
     if (eventType) {
-      whereClause += ' AND event_type = ?';
+      whereClause += ' AND se.event_type = ?';
       params.push(eventType);
     }
     
@@ -1005,16 +1005,16 @@ router.post('/security-report', async (req, res) => {
     let timeFilter = '';
     switch (timeRange) {
       case '1h':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)';
         break;
       case '24h':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)';
         break;
       case '7d':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
         break;
       case '30d':
-        timeFilter = 'AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
+        timeFilter = 'AND se.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
         break;
     }
     

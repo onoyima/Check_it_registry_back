@@ -58,6 +58,11 @@ router.post('/onboard', requireRole(['business', 'admin']), async (req, res) => 
       });
     }
 
+    const onboardingInvoice = await RevenueService.redeemPaidInvoice(req.user.id, pay_by_pass, ['business_onboarding_fee']);
+    if (!onboardingInvoice) {
+      return res.status(402).json({ requiresPayment: true, amount: fee, error: 'We could not confirm your payment for this onboarding.' });
+    }
+
     const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'BUSINESS_ONBOARD', {
       ipAddress: req.clientIp,
     });

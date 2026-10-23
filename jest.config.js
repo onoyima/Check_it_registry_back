@@ -4,6 +4,9 @@ module.exports = {
   testMatch: [
     '**/tests/**/*.test.js'
   ],
+  // The whole-system tests need their own database: run them with
+  // `npm run test:system` (jest.system.config.js)
+  testPathIgnorePatterns: ['/node_modules/', '/tests/system/'],
   collectCoverageFrom: [
     'routes/**/*.js',
     'services/**/*.js',

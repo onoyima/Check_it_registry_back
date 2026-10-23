@@ -1,10 +1,12 @@
 // Found Device Reporting Routes
 const express = require('express');
+const { escapeHtml } = require('../utils/escape-html');
 const Database = require('../config');
 const NotificationService = require('../services/NotificationService');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
+const { authenticateToken, requireRole } = require('../middleware/auth');
 
 // Report a found device (public endpoint)
 router.post('/report', async (req, res) => {
@@ -154,13 +156,13 @@ router.post('/report', async (req, res) => {
             <p>A device has been reported as found and needs coordination for return.</p>
             <p><strong>Found Case ID:</strong> ${foundCaseId}</p>
             <p><strong>Original Case ID:</strong> ${existingReport.case_id}</p>
-            <p><strong>Device:</strong> ${device.brand} ${device.model}</p>
+            <p><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</p>
             <p><strong>IMEI:</strong> ${device.imei || 'Not provided'}</p>
             <p><strong>Serial:</strong> ${device.serial || 'Not provided'}</p>
             <p><strong>Found Location:</strong> ${location_found}</p>
             <p><strong>Finder:</strong> ${finder_name}</p>
             <p><strong>Finder Contact:</strong> ${finder_contact}</p>
-            <p><strong>Owner:</strong> ${getDisplayName(owner)} (${owner.email})</p>
+            <p><strong>Owner:</strong> ${escapeHtml(getDisplayName(owner))} (${owner.email})</p>
             <p>Please coordinate the return of this device to its rightful owner.</p>
           `,
           {
@@ -287,27 +289,10 @@ router.get('/check', async (req, res) => {
 });
 
 // Get found device reports (for LEA/Admin)
-router.get('/reports', async (req, res) => {
+router.get('/reports', authenticateToken, requireRole(['lea', 'admin']), async (req, res) => {
   try {
-    // This endpoint requires authentication
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    // Simple token verification (you might want to use the full auth middleware)
-    const token = authHeader.split(' ')[1];
-    let user;
-    try {
-      user = Database.verifyJWT(token);
-    } catch (error) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    // Only LEA and admin can access
-    if (!['lea', 'admin'].includes(user.role)) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
+    // Region comes from the database record (the token does not carry it)
+    const user = req.user;
 
     const { status, page = 1, limit = 20 } = req.query;
 

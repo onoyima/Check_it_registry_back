@@ -53,6 +53,16 @@ function validateEnv({ failFast = false } = {}) {
     problems.push(`KYC_ENCRYPTION_KEY is ${encKey.length} chars; use >= 32.`);
   }
 
+  // --- Payments / identity providers ---
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    problems.push('PAYSTACK_SECRET_KEY is missing (or defined twice with an empty value); payments and webhooks will fail.');
+  } else if (isProd && /^sk_test_/.test(process.env.PAYSTACK_SECRET_KEY)) {
+    console.warn('[env] WARNING: PAYSTACK_SECRET_KEY is a TEST key in production. No real money will be collected.');
+  }
+  if (isProd && /^test_/.test(process.env.PREMBLY_API_KEY || '')) {
+    console.warn('[env] WARNING: PREMBLY_API_KEY is a TEST key in production. NIN checks are not real.');
+  }
+
   // --- R7: rate-limit env sanity ---
   const rlm = parseInt(process.env.RATE_LIMIT_MAX, 10);
   if (process.env.RATE_LIMIT_MAX !== undefined && (Number.isNaN(rlm) || rlm < 1)) {

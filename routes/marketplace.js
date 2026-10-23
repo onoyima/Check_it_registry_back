@@ -16,31 +16,10 @@ router.post('/', authenticateToken, async (req, res) => {
   }
 });
 
-// Debug: direct SQL count
-router.get('/debug-listing-count', async (req, res) => {
-  try {
-    const allActive = await Database.query("SELECT COUNT(*) as cnt FROM marketplace_listings WHERE status = 'active'");
-    const joined = await Database.query(`SELECT l.*, d.brand, d.model, d.category, u.name as seller_name, u.first_name as seller_first_name, u.middle_name as seller_middle_name, u.last_name as seller_last_name, u.kyc_status as seller_verified FROM marketplace_listings l JOIN devices d ON l.device_id = d.id JOIN users u ON l.seller_id = u.id WHERE 1=1 AND l.status = 'active' ORDER BY l.created_at DESC LIMIT 20 OFFSET 0`);
-    const countOnly = await Database.query(`SELECT COUNT(*) as cnt FROM marketplace_listings l JOIN devices d ON l.device_id = d.id JOIN users u ON l.seller_id = u.id WHERE l.status = 'active'`);
-    res.json({
-      rawCount: allActive[0]?.cnt || 0,
-      joinedCount: countOnly[0]?.cnt || 0,
-      returnedCount: joined.length,
-      sampleTitle: joined[0]?.title || 'none',
-      dbName: process.env.DB_NAME
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message, stack: e.stack });
-  }
-});
-
 // Get all listings (public)
 router.get('/', async (req, res) => {
-    console.log('GET /marketplace - query:', JSON.stringify(req.query));
-    console.log('GET /marketplace - url:', req.originalUrl);
     try {
       const listings = await MarketplaceService.getListings(req.query);
-      console.log('GET /marketplace - result count:', listings.length);
     res.json(listings);
   } catch (error) {
     console.error('Get listings error:', error);
@@ -68,6 +47,87 @@ router.get('/seller/orders', authenticateToken, async (req, res) => {
         console.error('Seller orders error:', err);
         res.status(500).json({ error: 'Failed to fetch seller orders' });
     }
+});
+
+// GET /api/marketplace/inbox - aggregate all messages for the current user across their listings
+router.get('/inbox', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get all threads/messages where user is sender or receiver
+    const messages = await Database.query(`
+      SELECT
+        mm.id,
+        mm.listing_id AS deviceId,
+        ml.title AS deviceTitle,
+        CASE
+          WHEN mm.sender_id = ? THEN mm.receiver_id
+          ELSE mm.sender_id
+        END AS otherUserId,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.name
+          ELSE su.name
+        END AS fromName,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.first_name
+          ELSE su.first_name
+        END AS fromFirstName,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.last_name
+          ELSE su.last_name
+        END AS fromLastName,
+        CASE
+          WHEN mm.sender_id = ? THEN ru.phone
+          ELSE su.phone
+        END AS fromContact,
+        ml.title AS subject,
+        mm.content AS message,
+        CASE
+          WHEN mm.sender_id = ? THEN 0
+          WHEN mm.read_at IS NOT NULL THEN 0
+          ELSE 1
+        END AS isUnread,
+        mm.created_at,
+        CASE
+          WHEN mm.sender_id = ? THEN 1
+          ELSE 0
+        END AS isFromMe
+      FROM marketplace_messages mm
+      LEFT JOIN marketplace_listings ml ON ml.id = mm.listing_id
+      LEFT JOIN users su ON su.id = mm.sender_id
+      LEFT JOIN users ru ON ru.id = mm.receiver_id
+      WHERE mm.sender_id = ? OR mm.receiver_id = ?
+      ORDER BY mm.created_at DESC
+    `, [userId, userId, userId, userId, userId, userId, userId, userId, userId]);
+
+    // Group by listing + other user to create conversation threads
+    const threadMap = new Map();
+    for (const msg of messages) {
+      const key = `${msg.deviceId || 'none'}_${msg.otherUserId}`;
+      if (!threadMap.has(key)) {
+        threadMap.set(key, {
+          id: msg.id,
+          deviceId: msg.deviceId || null,
+          deviceTitle: msg.deviceTitle || null,
+          fromName: msg.fromFirstName || msg.fromLastName
+            ? `${msg.fromFirstName || ''} ${msg.fromLastName || ''}`.trim()
+            : (msg.fromName || 'Unknown'),
+          fromContact: msg.fromContact || '',
+          subject: msg.subject || msg.deviceTitle || 'No subject',
+          message: msg.message,
+          status: msg.isFromMe ? 'read' : (msg.isUnread ? 'unread' : 'read'),
+          createdAt: msg.created_at,
+          online: false,
+          isFromMe: !!msg.isFromMe,
+        });
+      }
+    }
+
+    res.json({ data: Array.from(threadMap.values()) });
+  } catch (error) {
+    console.error('Get inbox error:', error);
+    res.status(500).json({ error: 'Failed to load inbox' });
+  }
 });
 
 // Get a single listing (public)
@@ -154,19 +214,26 @@ router.post('/complete-purchase', authenticateToken, async (req, res) => {
   }
 });
 
-// Purchase a listing (legacy — simulated payment, no Paystack required)
-router.post('/:id/purchase', authenticateToken, async (req, res) => {
+// Send message
+// A shopper flags a listing (fraud, wrong details, already sold). It is
+// recorded in the audit log, where the admin marketplace page can see it.
+const FLAG_REASONS = ['fraud', 'wrong', 'sold', 'other'];
+router.post('/:id/flag', authenticateToken, async (req, res) => {
   try {
-    const { paymentMethodId } = req.body;
-    const result = await MarketplaceService.purchaseListing(req.user.id, req.params.id, paymentMethodId || 'manual');
-    res.json(result);
+    const reason = String(req.body?.reason || '');
+    if (!FLAG_REASONS.includes(reason)) return res.status(400).json({ error: 'Choose a reason' });
+    const listing = await Database.selectOne('marketplace_listings', 'id, seller_id', 'id = ?', [req.params.id]);
+    if (!listing) return res.status(404).json({ error: 'Listing not found' });
+    if (listing.seller_id === req.user.id) return res.status(400).json({ error: 'You cannot flag your own listing' });
+    await Database.logAudit(req.user.id, 'LISTING_FLAGGED', 'marketplace_listings', listing.id, null,
+      { reason, note: String(req.body?.note || '').slice(0, 500) }, req.ip);
+    res.json({ success: true, message: 'Thanks — we will review this listing.' });
   } catch (error) {
-    console.error('Purchase listing error:', error);
-    res.status(400).json({ error: error.message });
+    console.error('Flag listing error:', error);
+    res.status(500).json({ error: 'Could not send the report' });
   }
 });
 
-// Send message
 router.post('/:id/messages', authenticateToken, async (req, res) => {
   try {
     const { content } = req.body;
@@ -194,86 +261,6 @@ router.get('/:id/messages', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /api/marketplace/inbox - aggregate all messages for the current user across their listings
-router.get('/inbox', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    // Get all threads/messages where user is sender or receiver
-    const messages = await Database.query(`
-      SELECT
-        mm.id,
-        mm.listing_id AS deviceId,
-        ml.title AS deviceTitle,
-        CASE
-          WHEN mm.sender_id = ? THEN mm.receiver_id
-          ELSE mm.sender_id
-        END AS otherUserId,
-        CASE
-          WHEN mm.sender_id = ? THEN ru.name
-          ELSE su.name
-        END AS fromName,
-        CASE
-          WHEN mm.sender_id = ? THEN ru.first_name
-          ELSE su.first_name
-        END AS fromFirstName,
-        CASE
-          WHEN mm.sender_id = ? THEN ru.last_name
-          ELSE su.last_name
-        END AS fromLastName,
-        CASE
-          WHEN mm.sender_id = ? THEN ru.phone
-          ELSE su.phone
-        END AS fromContact,
-        ml.title AS subject,
-        mm.content AS message,
-        CASE
-          WHEN mm.sender_id = ? THEN 0
-          WHEN mm.read_at IS NOT NULL THEN 0
-          ELSE 1
-        END AS isUnread,
-        mm.created_at,
-        CASE
-          WHEN mm.sender_id = ? THEN 1
-          ELSE 0
-        END AS isFromMe
-      FROM marketplace_messages mm
-      LEFT JOIN marketplace_listings ml ON ml.id = mm.listing_id
-      LEFT JOIN users su ON su.id = mm.sender_id
-      LEFT JOIN users ru ON ru.id = mm.receiver_id
-      WHERE mm.sender_id = ? OR mm.receiver_id = ?
-      ORDER BY mm.created_at DESC
-    `, [userId, userId, userId, userId, userId, userId, userId, userId, userId]);
-
-    // Group by listing + other user to create conversation threads
-    const threadMap = new Map();
-    for (const msg of messages) {
-      const key = `${msg.deviceId || 'none'}_${msg.otherUserId}`;
-      if (!threadMap.has(key)) {
-        threadMap.set(key, {
-          id: msg.id,
-          deviceId: msg.deviceId || null,
-          deviceTitle: msg.deviceTitle || null,
-          fromName: msg.fromFirstName || msg.fromLastName
-            ? `${msg.fromFirstName || ''} ${msg.fromLastName || ''}`.trim()
-            : (msg.fromName || 'Unknown'),
-          fromContact: msg.fromContact || '',
-          subject: msg.subject || msg.deviceTitle || 'No subject',
-          message: msg.message,
-          status: msg.isFromMe ? 'read' : (msg.isUnread ? 'unread' : 'read'),
-          createdAt: msg.created_at,
-          online: false,
-          isFromMe: !!msg.isFromMe,
-        });
-      }
-    }
-
-    res.json({ data: Array.from(threadMap.values()) });
-  } catch (error) {
-    console.error('Get inbox error:', error);
-    res.status(500).json({ error: 'Failed to load inbox' });
-  }
-});
 
 // ADMIN ROUTES
 router.get('/admin/all', authenticateToken, requireAdmin, async (req, res) => {
