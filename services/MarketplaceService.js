@@ -10,7 +10,7 @@ class MarketplaceService {
     const device = await Database.selectOne('devices', 'id, user_id, status, ownership_level', 'id = ?', [device_id]);
     if (!device) throw new Error('Device not found');
     if (device.user_id !== userId) throw new Error('You do not own this device');
-    if (device.status === 'stolen' || device.status === 'lost') throw new Error('Cannot list a reported device');
+    if (['stolen', 'lost', 'found'].includes(device.status)) throw new Error('This item is reported and held by ProveOwnership, so it cannot be listed');
     // Buyers only see items whose owner we have checked
     if (device.ownership_level === 'disputed') throw new Error('This item has an open ownership claim and cannot be listed until it is resolved');
     if (device.ownership_level !== 'verified_owner') {

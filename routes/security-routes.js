@@ -7,6 +7,7 @@ const NINVerificationService = require('../services/NINVerificationService');
 const CACVerificationService = require('../services/CACVerificationService');
 const BusinessVerificationService = require('../services/BusinessVerificationService');
 const FraudDetectionService = require('../services/FraudDetectionService');
+const IdentityService = require('../services/IdentityService');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
 router.use(authenticateToken);
@@ -82,17 +83,15 @@ router.post('/mfa/verify', async (req, res) => {
 
 router.get('/verification-status', async (req, res) => {
   try {
-    const user = await Database.selectOne('users', 'is_verified, nin_verified_at, nin_last_digits',
-      'id = ?', [req.user.id]);
-    const kycRecords = await Database.query(
-      'SELECT verification_type, nin_status AS status, verified_at FROM kyc_verifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5',
-      [req.user.id]
-    );
+    const user = await Database.selectOne('users', 'nin_verified_at', 'id = ?', [req.user.id]);
+    const st = await IdentityService.status(req.user.id);
+    // (The saved NIN is never shown back, not even its last digits)
     res.json({
-      nin_verified: user?.is_verified === 1,
-      nin_verified_at: user?.nin_verified_at || null,
-      nin_last_digits: user?.nin_last_digits || null,
-      kyc_records: kycRecords || [],
+      nin_verified: st.identity_confirmed,
+      identity_confirmed: st.identity_confirmed,
+      business_confirmed: st.business_confirmed,
+      nin_verified_at: st.identity_confirmed ? user?.nin_verified_at || null : null,
+      names_locked: st.identity_confirmed,
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch verification status' });
@@ -124,110 +123,72 @@ router.post('/reauthenticate/verify', async (req, res) => {
   }
 });
 
+// Confirm your identity with your NIN (free). Reports also ask for the NIN
+// every time; this page just lets people do it before they ever need to.
 router.post('/nin/verify', async (req, res) => {
   try {
-    const { nin } = req.body;
-    if (!nin) return res.status(400).json({ error: 'NIN is required' });
-
-    const fee = await RevenueService.getFee('nin_verification_fee');
-
-    /* Check payment */
-    const { pay_by_pass } = req.body;
-    if (!pay_by_pass) {
-      const invoiceId = await RevenueService.createPaymentInvoice(
-        req.user.id, fee, 'nin_verification',
-        `NIN-${req.user.id}-${Date.now()}`,
-        { nin }
-      );
-      return res.json({
-        requiresPayment: true,
-        invoiceId,
-        amount: fee,
-        purpose: 'NIN Verification Fee',
-        message: `Payment of ₦${fee} required for NIN verification.`
-      });
-    }
-
-    const ninInvoice = await RevenueService.redeemPaidInvoice(req.user.id, pay_by_pass, ['nin_verification_fee']);
-    if (!ninInvoice) {
-      return res.status(402).json({ requiresPayment: true, amount: fee, error: 'We could not confirm your payment for NIN verification.' });
-    }
-    await RevenueService.chargeForCheck(req.user.id, fee, ninInvoice.reference).catch(() => {});
-
-    const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'NIN_VERIFY', {
-      ipAddress: req.clientIp
-    });
-
-    const result = await NINVerificationService.verifyAndLink(req.user.id, nin);
-
-    await SecurityService.logCriticalAction(req.user.id, 'NIN_VERIFY', {
-      success: result.success,
-      deviceId: null,
-      reference: result.verificationId,
-      ipAddress: req.clientIp,
-      userAgent: req.userAgent,
-      executionTime: 0
-    });
-
-    res.json(result);
+    const { nin } = req.body || {};
+    await IdentityService.confirmNin(req.user.id, nin, 'identity_page');
+    await SecurityService.logCriticalAction(req.user.id, 'NIN_VERIFY', { success: true, ipAddress: req.clientIp }).catch(() => {});
+    res.json({ success: true, message: 'Your identity is confirmed.' });
   } catch (error) {
+    if (error instanceof IdentityService.IdentityError) return res.status(error.status || 400).json({ success: false, error: error.message });
     console.error('NIN verify error:', error);
-    res.status(400).json({ error: error.message });
+    res.status(500).json({ error: 'Could not confirm your identity. Please try again.' });
   }
 });
 
+// Business verification: pay the business verification fee, then the CAC
+// registration number is checked (with Prembly the first time only). The
+// fee is only used when the business is confirmed, so trying again after a
+// mistake costs nothing extra.
 router.post('/cac/verify', async (req, res) => {
   try {
-    const { rcNumber, businessName, companyType } = req.body;
-    if (!rcNumber) return res.status(400).json({ error: 'RC Number is required' });
+    const { rcNumber, pay_by_pass } = req.body || {};
+    if (!rcNumber) return res.status(400).json({ error: 'Enter your business registration number (RC or BN number).' });
+    const profile = await Database.selectOne('business_profiles', 'id, verification_status', 'user_id = ?', [req.user.id]);
+    if (!profile) return res.status(400).json({ error: 'Complete your business profile first.' });
+    if (profile.verification_status === 'verified') return res.json({ success: true, status: 'passed', message: 'Your business is already verified.' });
 
-    const fee = await BusinessVerificationService.getVerificationFee();
-
-    const { pay_by_pass } = req.body;
-    let feeTransactionId = null;
-    if (!pay_by_pass) {
-      const invoiceId = await RevenueService.createPaymentInvoice(
-        req.user.id, fee, 'business_verification',
-        `CAC-${req.user.id}-${Date.now()}`,
-        { rcNumber, businessName }
-      );
-      return res.json({
-        requiresPayment: true,
-        invoiceId,
-        amount: fee,
-        purpose: 'Business Verification Fee',
-        message: `Payment of ₦${fee} required for CAC verification.`
-      });
-    } else {
-      const cacInvoice = await RevenueService.redeemPaidInvoice(req.user.id, pay_by_pass, ['business_verification_fee']);
-      if (!cacInvoice) {
-        return res.status(402).json({ requiresPayment: true, amount: fee, error: 'We could not confirm your payment for business verification.' });
-      }
-      feeTransactionId = await RevenueService.chargeForCheck(req.user.id, fee, cacInvoice.reference);
+    const fee = Number(await BusinessVerificationService.getVerificationFee()) || 0;
+    let invoice = null;
+    if (fee > 0) {
+      if (!pay_by_pass) return res.json({ requiresPayment: true, amount: fee, feeType: 'business_verification_fee', purpose: 'Business verification fee' });
+      invoice = await RevenueService.findPaidInvoice(req.user.id, pay_by_pass, ['business_verification_fee']);
+      if (!invoice) return res.status(402).json({ requiresPayment: true, amount: fee, feeType: 'business_verification_fee', error: 'We could not confirm your payment for business verification.' });
     }
 
-    const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'BUSINESS_VERIFY', {
-      ipAddress: req.clientIp
-    });
-    if (fraudCheck.blocked) {
-      return res.status(403).json({ error: 'Action blocked due to security concerns.' });
+    const fraudCheck = await FraudDetectionService.checkAndFlag(req.user.id, 'BUSINESS_VERIFY', { ipAddress: req.clientIp });
+    if (fraudCheck.blocked) return res.status(403).json({ error: 'Action blocked due to security concerns.' });
+
+    let result;
+    try {
+      result = await IdentityService.confirmBusiness(req.user.id, rcNumber, 'business_verification');
+    } catch (e) {
+      if (!(e instanceof IdentityService.IdentityError)) throw e;
+      await Database.insert('business_verification_attempts', {
+        id: Database.generateUUID(), business_profile_id: profile.id, user_id: req.user.id, rc_number: String(rcNumber).slice(0, 20),
+        fee_amount: fee, payment_reference: invoice?.reference || null, provider: 'prembly', status: 'failed', status_reason: e.code, created_at: new Date(),
+      }).catch(() => {});
+      return res.status(e.status || 400).json({ success: false, status: 'failed', paid: !!invoice, error: e.message });
     }
 
-    const result = await BusinessVerificationService.verifyAndRecord(
-      req.user.id, rcNumber, businessName, companyType,
-      pay_by_pass, feeTransactionId
-    );
-
-    await SecurityService.logCriticalAction(req.user.id, 'BUSINESS_VERIFY', {
-      success: result.success,
-      reference: result.attemptId,
-      ipAddress: req.clientIp
-    });
-
-    res.json(result);
+    if (invoice) {
+      const used = await RevenueService.redeemPaidInvoice(req.user.id, invoice.reference, ['business_verification_fee']);
+      if (!used) return res.status(402).json({ requiresPayment: true, amount: fee, error: 'This payment has already been used.' });
+      await Database.insert('transactions', { id: Database.generateUUID(), user_id: req.user.id, type: 'business_verification_fee', amount: fee, status: 'completed', reference: invoice.reference, description: 'Business verification fee', created_at: new Date() }).catch(() => {});
+    }
+    await Database.update('business_profiles', { verification_status: 'verified', verified_at: new Date(), updated_at: new Date() }, 'id = ?', [profile.id]);
+    await Database.update('users', { verification_badge_visible: 1, updated_at: new Date() }, 'id = ?', [req.user.id]).catch(() => {});
+    await Database.insert('business_verification_attempts', {
+      id: Database.generateUUID(), business_profile_id: profile.id, user_id: req.user.id, rc_number: String(rcNumber).slice(0, 20),
+      fee_amount: fee, payment_reference: invoice?.reference || null, provider: 'prembly', status: 'passed', created_at: new Date(),
+    }).catch(() => {});
+    await Database.logAudit(req.user.id, 'BUSINESS_VERIFIED', 'business_profiles', profile.id).catch(() => {});
+    res.json({ success: true, status: 'passed', company: result.company, message: 'Your business is verified.' });
   } catch (error) {
     console.error('CAC verify error:', error);
-    res.status(400).json({ error: error.message });
+    res.status(500).json({ error: 'Could not verify the business. Please try again.' });
   }
 });
 

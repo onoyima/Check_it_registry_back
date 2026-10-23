@@ -782,7 +782,7 @@ class OwnershipTransferService {
         return { eligible: false, reason: 'Device not found' };
       }
 
-      if (device.status === 'stolen' || device.status === 'lost') {
+      if (['stolen', 'lost', 'found'].includes(device.status)) {
         return { eligible: false, reason: 'Cannot transfer stolen or lost devices' };
       }
 

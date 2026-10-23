@@ -1142,6 +1142,86 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // Identity checks: what Prembly returned is kept (encrypted) so each NIN
+    // or CAC number is looked up only once; later reports compare against it.
+    // Reported items: ProveOwnership holds them until the owner pays the
+    // release fee.
+    name: '027_identity_records_and_custody',
+    sql: [
+      `CREATE TABLE IF NOT EXISTS identity_records (
+        id VARCHAR(36) PRIMARY KEY,
+        kind VARCHAR(10) NOT NULL,
+        id_hash CHAR(64) NOT NULL,
+        id_encrypted TEXT NOT NULL,
+        id_last4 VARCHAR(4) NULL,
+        user_id VARCHAR(36) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'unmatched',
+        data_encrypted MEDIUMTEXT NULL,
+        provider VARCHAR(30) NOT NULL DEFAULT 'prembly',
+        fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        matched_at TIMESTAMP NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_identity_kind_hash (kind, id_hash),
+        KEY idx_identity_user (user_id, kind, status)
+      )`,
+      `CREATE TABLE IF NOT EXISTS identity_attempts (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        kind VARCHAR(10) NOT NULL,
+        purpose VARCHAR(30) NOT NULL,
+        success TINYINT(1) NOT NULL DEFAULT 0,
+        reason VARCHAR(40) NULL,
+        provider_called TINYINT(1) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_attempts_user (user_id, created_at)
+      )`,
+      `CREATE TABLE IF NOT EXISTS device_custody (
+        id VARCHAR(36) PRIMARY KEY,
+        device_id VARCHAR(36) NOT NULL,
+        report_id VARCHAR(36) NULL,
+        owner_id VARCHAR(36) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'held',
+        held_since TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        found_at TIMESTAMP NULL,
+        found_note TEXT NULL,
+        release_fee DECIMAL(12,2) NULL,
+        release_reference VARCHAR(100) NULL,
+        release_paid_at TIMESTAMP NULL,
+        fee_waived_by VARCHAR(36) NULL,
+        released_at TIMESTAMP NULL,
+        released_by VARCHAR(36) NULL,
+        closed_reason VARCHAR(40) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_custody_device (device_id, status),
+        KEY idx_custody_owner (owner_id, status)
+      )`,
+    ],
+    seed: async () => {
+      // 026 re-ran older steps that put the old ENUM lists back; keep these open
+      for (const sql of [
+        'ALTER TABLE transactions MODIFY COLUMN type VARCHAR(50) NOT NULL',
+        "ALTER TABLE ownership_transfers MODIFY COLUMN status VARCHAR(30) DEFAULT 'initiated'",
+        "ALTER TABLE recovery_services MODIFY COLUMN status VARCHAR(30) DEFAULT 'payment_pending'",
+      ]) await db.query(sql).catch((e) => console.warn('027:', e.message));
+      const put = async (key, value, description) => {
+        const [row] = await db.query('SELECT id FROM system_settings WHERE setting_key = ?', [key]);
+        if (!row) {
+          await db.query("INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public) VALUES (UUID(), ?, ?, 'number', ?, 0)", [key, value, description]);
+        }
+      };
+      await put('device_release_fee', '2000', 'Fee the owner pays to get back an item ProveOwnership held after it was reported');
+      // Every report is paid now
+      await db.query("UPDATE system_settings SET description = 'Fee for every device report' WHERE setting_key = 'report_verification_fee'").catch(() => {});
+      // Items already reported before this change: ProveOwnership holds them too
+      await db.query(`INSERT INTO device_custody (id, device_id, report_id, owner_id, status, held_since)
+        SELECT UUID(), d.id, r.id, d.user_id, IF(d.status = 'found', 'found', 'held'), r.created_at
+        FROM devices d JOIN reports r ON r.device_id = d.id AND r.report_type IN ('stolen','lost') AND r.status IN ('open','under_review')
+        WHERE d.status IN ('stolen','lost','found') AND d.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM device_custody c WHERE c.device_id = d.id AND c.status IN ('held','found','release_paid'))`).catch(() => {});
+    },
+  },
 ];
 
 async function runMigrations() {

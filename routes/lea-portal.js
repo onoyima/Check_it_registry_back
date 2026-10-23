@@ -680,6 +680,8 @@ router.put('/cases/:caseId/status', async (req, res) => {
       lea_notes: notes || reportCase.lea_notes,
       updated_at: new Date()
     }, 'id = ?', [reportCase.id]);
+    // The item ProveOwnership holds waits for the release fee (or is let go)
+    await require('../services/CustodyService').onCaseStatus(reportCase, status, userId);
 
     // Log audit trail
     await Database.logAudit(
@@ -704,6 +706,7 @@ router.put('/cases/:caseId/status', async (req, res) => {
           `
             <h2>Case Status Update</h2>
             <p>Your case <strong>${caseId}</strong> has been marked as resolved.</p>
+            <p>ProveOwnership is holding your item. Open it in the app and pay the release fee to get it back.</p>
             <p><strong>Device:</strong> ${escapeHtml(reportCase.brand)} ${escapeHtml(reportCase.model)}</p>
             ${notes ? `<p><strong>LEA Notes:</strong> ${notes}</p>` : ''}
             <p>Thank you for using Prove Ownership Device Registry.</p>

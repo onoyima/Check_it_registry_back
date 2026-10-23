@@ -8,6 +8,7 @@ const DEFAULT_FEES = {
   business_verification_fee: 2500,
   marketplace_commission_percent: 5.00,
   device_recovery_fee: 2000,
+  device_release_fee: 2000,
   business_onboarding_fee: 5000,
   business_onboarding_commission_percent: 30,
   free_reports_per_device: 3,
@@ -50,7 +51,10 @@ class RevenueService {
 
   static async getAllFees() {
     const fees = {};
-    for (const key of Object.keys(DEFAULT_FEES)) {
+    // No longer charged: NIN checks are part of each report now, and there
+    // are no free reports
+    const retired = ['nin_verification_fee', 'free_reports_per_device', 'nin_verification_per_device_fee'];
+    for (const key of Object.keys(DEFAULT_FEES).filter((k) => !retired.includes(k))) {
       fees[key] = await this.getFee(key);
     }
     return fees;
@@ -145,7 +149,7 @@ class RevenueService {
   static get PAYABLE_FEES() {
     return ['device_check_fee', 'report_verification_fee', 'nin_verification_fee',
       'business_verification_fee', 'device_recovery_fee', 'business_onboarding_fee',
-      'nin_verification_per_device_fee'];
+      'nin_verification_per_device_fee', 'device_release_fee'];
   }
 
   // Confirm with Paystack that an invoice was paid in full; marks it completed.
@@ -192,6 +196,21 @@ class RevenueService {
     return invoice;
   }
 
+  // A paid invoice that hasn't been used yet, WITHOUT using it. Lets a report
+  // check the payment first and only use it once the report is filed, so a
+  // failed identity check never wastes a payment.
+  static async findPaidInvoice(userId, referenceOrId, feeKeys) {
+    if (!referenceOrId || typeof referenceOrId !== 'string') return null;
+    const invoice = await Database.selectOne(
+      'payment_invoices', '*', '(reference = ? OR id = ?) AND user_id = ? AND consumed_at IS NULL',
+      [referenceOrId, referenceOrId, userId]
+    );
+    if (!invoice) return null;
+    const wanted = (feeKeys || []).map((k) => this.feeBase(k));
+    if (!wanted.includes(this.feeBase(invoice.purpose))) return null;
+    return (await this.confirmInvoicePayment(invoice)) ? invoice : null;
+  }
+
   static async markInvoicePaid(reference) {
     await Database.update('payment_invoices',
       { status: 'completed', paid_at: new Date() },
@@ -226,47 +245,25 @@ class RevenueService {
    * Count is per USER (across all devices), not per device.
    * @returns {{ requiresPayment: boolean, reportNumber: number, amount?: number, currency?: string, reason?: string }}
    */
+  // Every report is paid: the admin's "report verification fee". (There used
+  // to be free reports after the first; there are none now.) A fee of 0
+  // switches the payment step off.
   static async shouldChargeForUserReport(userId) {
-    const [{ count: completedCount }] = await Database.query(
-      `SELECT COUNT(*) as count FROM reports 
+    const [{ count }] = await Database.query(
+      `SELECT COUNT(*) as count FROM reports
        WHERE reporter_id = ? AND status IN ('open', 'under_review', 'resolved')`,
       [userId]
     );
-
-    const reportNumber = completedCount + 1;
-    const freeAfterFirst = parseInt(await this.getFee('free_reports_after_first')) || 2;
-
-    // Report #1: always paid
-    if (completedCount === 0) {
-      const fee = await this.getFee('report_verification_fee');
-      return {
-        requiresPayment: true,
-        reportNumber: 1,
-        amount: fee,
-        currency: 'NGN',
-        reason: 'First report requires payment and identity verification'
-      };
-    }
-
-    // Reports #2 through #(1 + freeAfterFirst): free
-    if (completedCount <= freeAfterFirst) {
-      return {
-        requiresPayment: false,
-        reportNumber,
-        reason: 'Free report (included in your plan)'
-      };
-    }
-
-    // Report #(2 + freeAfterFirst)+: paid
-    const fee = await this.getFee('report_verification_fee');
+    const fee = Number(await this.getFee('report_verification_fee')) || 0;
     return {
-      requiresPayment: true,
-      reportNumber,
+      requiresPayment: fee > 0,
+      reportNumber: Number(count) + 1,
       amount: fee,
       currency: 'NGN',
-      reason: 'Free reports exhausted. Payment required for this report.'
+      reason: 'Each report has a verification fee'
     };
   }
+
 
   static async getActivePaymentProvider() {
     const row = await Database.selectOne('system_settings', 'setting_value',

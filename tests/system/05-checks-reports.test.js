@@ -2,6 +2,8 @@
 // reporting an item stolen, and what everyone sees afterwards.
 const { api, auth, state, Database, registerItem, confirmItem, expectStatus, makeImei, payInvoice, outbox } = require('./helpers');
 const PaystackService = require('../../services/PaystackService');
+const prembly = require('./prembly-fake');
+prembly.install();
 
 // Stand-in for Paystack's API: hand back a checkout link (no network)
 beforeAll(() => {
@@ -90,16 +92,12 @@ describe('reporting an item stolen', () => {
 
     expectStatus(await api().post('/api/report-management').set(auth('user')).send({ device_id: phone.id }), 400);
     const pay = expectStatus(await api().post('/api/report-management').set(auth('user')).send(body), 200);
-    let caseId;
-    if (pay.body.requiresPayment) {
-      await payInvoice(pay.body.reference, pay.body.amount);
-      // identity already confirmed (the NIN check is an outside service)
-      await Database.query("UPDATE users SET kyc_status = 'verified', is_verified = 1 WHERE id = ?", [owner.id]);
-      const made = expectStatus(await api().post('/api/report-management').set(auth('user')).send({ ...body, pay_by_pass: pay.body.reference }), 200, 201);
-      caseId = made.body.case_id || made.body.report?.case_id || made.body.caseId;
-    } else {
-      caseId = pay.body.case_id;
-    }
+    expect(pay.body.requiresPayment).toBe(true);
+    const inv = expectStatus(await api().post('/api/revenue-admin/create-invoice').set(auth('user')).send({ fee_type: 'report_verification_fee' }), 201);
+    await payInvoice(inv.body.reference, inv.body.amount);
+    const nin = prembly.addPerson('Ada', 'Tester');
+    const made = expectStatus(await api().post('/api/report-management').set(auth('user')).send({ ...body, nin, pay_by_pass: inv.body.reference }), 200, 201);
+    const caseId = made.body.case_id || made.body.report?.case_id || made.body.caseId;
     expect(caseId).toBeTruthy();
 
     const [dev] = await Database.query('SELECT status FROM devices WHERE id = ?', [phone.id]);

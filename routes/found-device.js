@@ -106,11 +106,13 @@ router.post('/report', authenticateToken, async (req, res) => {
       updated_at: new Date()
     }, 'id = ?', [existingReport.id]);
 
-    // Update device status
+    // Update device status; ProveOwnership keeps holding it until the owner
+    // pays the release fee
     await Database.update('devices', {
       status: 'found',
       updated_at: new Date()
     }, 'id = ?', [device.id]);
+    await require('../services/CustodyService').markFound(device.id, req.user.id, `Found by ${finder_name} at ${location_found}`).catch((e) => console.error('Custody found failed:', e.message));
 
     // Log the found device check
     await Database.insert('imei_checks', {

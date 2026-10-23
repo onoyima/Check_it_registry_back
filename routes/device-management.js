@@ -546,6 +546,9 @@ router.post("/:id/release", authenticateToken, async (req, res) => {
     if (device.status === 'pending_transfer') {
       return res.status(409).json({ error: 'Cancel the pending transfer before releasing this item' });
     }
+    if (['stolen', 'lost', 'found'].includes(device.status)) {
+      return res.status(409).json({ error: 'This item is reported and held by ProveOwnership. Get it back first (pay the release fee), then you can release it.' });
+    }
     const own = await Database.selectOne('devices', 'ownership_level', 'id = ?', [deviceId]);
     if (own && own.ownership_level === 'disputed') {
       return res.status(409).json({ error: 'This item has an open ownership claim and cannot be released until it is resolved' });
@@ -613,7 +616,7 @@ router.post("/verify-device", authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "Device not found" });
     }
 
-    if (['stolen', 'lost', 'pending_transfer', 'released'].includes(device.status)) {
+    if (['stolen', 'lost', 'found', 'pending_transfer', 'released'].includes(device.status)) {
       return res.status(409).json({ error: `This device is currently ${device.status.replace('_', ' ')} and cannot be verified now.` });
     }
 
@@ -741,7 +744,7 @@ router.post('/verify-device-link', async (req, res) => {
 
     // Idempotent: if already verified, return success without error
     // An old link must never clear a theft/loss report or a pending transfer
-    if (['stolen', 'lost', 'pending_transfer', 'released'].includes(device.status)) {
+    if (['stolen', 'lost', 'found', 'pending_transfer', 'released'].includes(device.status)) {
       return res.status(409).json({ error: `This device is currently ${device.status.replace('_', ' ')} and cannot be verified with this link.` });
     }
 

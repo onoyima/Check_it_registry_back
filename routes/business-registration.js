@@ -17,7 +17,13 @@ router.post('/register', requireRole(['business']), async (req, res) => {
       return res.status(400).json({ error: 'Business name and registration number are required' });
     }
 
-    const existing = await Database.selectOne('business_profiles', 'id', 'user_id = ?', [req.user.id]);
+    const existing = await Database.selectOne('business_profiles', 'id, business_name, business_registration_number, verification_status', 'user_id = ?', [req.user.id]);
+    // Once verified, the business name and registration number are locked
+    if (existing && existing.verification_status === 'verified'
+      && (String(businessName).trim().toLowerCase() !== String(existing.business_name || '').trim().toLowerCase()
+        || String(registrationNumber).replace(/\s/g, '').toUpperCase() !== String(existing.business_registration_number || '').replace(/\s/g, '').toUpperCase())) {
+      return res.status(403).json({ error: 'Your business is verified, so its name and registration number are locked. Contact support if they need correcting.' });
+    }
     if (existing) {
       await Database.update('business_profiles', {
         business_name: businessName,

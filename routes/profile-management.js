@@ -129,6 +129,15 @@ router.put('/profile', authenticateToken, async (req, res) => {
     const { phone, region } = sanitizeObject(req.body);
     const nameFields = buildUserNameFields(sanitizeObject(req.body));
 
+    // Names can't change once identity is confirmed (an admin can, on request)
+    if (await require('../services/IdentityService').namesLocked(req.user.id)) {
+      const cur = await Database.selectOne('users', 'name, first_name, middle_name, last_name', 'id = ?', [req.user.id]);
+      const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      const changed = ['first_name', 'middle_name', 'last_name'].some((k) => req.body[k] !== undefined && !same(req.body[k], cur?.[k]))
+        || (req.body.name !== undefined && !req.body.first_name && !same(req.body.name, cur?.name));
+      if (changed) return res.status(403).json({ error: 'Your name is locked because your identity is confirmed. Contact support if it needs correcting.' });
+    }
+
     // Check if user exists
     const user = await Database.selectOne('users', 'id', 'id = ?', [req.user.id]);
     if (!user) {

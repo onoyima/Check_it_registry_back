@@ -478,6 +478,15 @@ router.put('/profile', authenticateToken, async (req, res) => {
     const { name, first_name, middle_name, last_name, phone, region } = req.body;
     const userId = req.user.id;
 
+    // Names can't change once identity is confirmed (an admin can, on request)
+    if (await require('../services/IdentityService').namesLocked(userId)) {
+      const cur = await Database.selectOne('users', 'name, first_name, middle_name, last_name', 'id = ?', [userId]);
+      const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      const changed = ['first_name', 'middle_name', 'last_name'].some((k) => req.body[k] !== undefined && !same(req.body[k], cur?.[k]))
+        || (req.body.name !== undefined && !req.body.first_name && !same(req.body.name, cur?.name));
+      if (changed) return res.status(403).json({ error: 'Your name is locked because your identity is confirmed. Contact support if it needs correcting.' });
+    }
+
     // Build name fields from either legacy or new fields
     const nameFields = buildUserNameFields({ name, first_name, middle_name, last_name });
     const displayName = getDisplayName(nameFields);

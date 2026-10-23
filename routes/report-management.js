@@ -11,7 +11,8 @@ const NotificationService = require('../services/NotificationService');
 const EmailTemplate = require('../services/EmailTemplate');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 const TermiiService = require('../services/TermiiService');
-const IdentityMatchingService = require('../services/IdentityMatchingService');
+const IdentityService = require('../services/IdentityService');
+const CustodyService = require('../services/CustodyService');
 
 router.use(authenticateToken);
 router.use(collectAuditContext);
@@ -209,69 +210,64 @@ router.post('/', async (req, res) => {
       return res.status(403).json({ error: 'Reporting blocked due to security concerns. Contact support.' });
     }
 
-    // === REPORT COUNT & PAYMENT DETERMINATION (per-user, not per-device) ===
+    // === 1. PAYMENT: every report pays the admin's report verification fee ===
+    // The payment is checked here but only used up once the report is
+    // created, so a failed identity check never wastes it.
     const paymentInfo = await RevenueService.shouldChargeForUserReport(userId);
     const reportNumber = paymentInfo.reportNumber;
-
-    // === KYC CHECK (only needed for first report if not already verified) ===
-    const isKycVerified = await IdentityMatchingService.isUserKycVerified(userId);
-
+    let paidInvoice = null;
     if (paymentInfo.requiresPayment) {
-      // Payment is required for this report
       if (!pay_by_pass) {
-        // Return payment required response
-        const reference = `RPT-${userId.slice(0, 8)}-${Date.now()}`;
-        const invoiceId = await RevenueService.createPaymentInvoice(
-          userId, paymentInfo.amount, 'report_verification',
-          reference,
-          { device_id, report_type, reportNumber }
-        );
         return res.json({
           requiresPayment: true,
-          invoiceId,
-          reference,
           amount: paymentInfo.amount,
           currency: paymentInfo.currency,
-          purpose: 'Report Verification Fee',
+          feeType: 'report_verification_fee',
+          purpose: 'Report verification fee',
           reportNumber,
-          kycRequired: !isKycVerified,
-          message: paymentInfo.reason
+          message: 'Pay the report fee, then confirm your identity to file this report.'
         });
       }
-
-      // Payment reference provided — confirm with Paystack and use it once
-      const reportInvoice = await RevenueService.redeemPaidInvoice(userId, pay_by_pass, ['report_verification_fee']);
-      if (!reportInvoice) {
+      paidInvoice = await RevenueService.findPaidInvoice(userId, pay_by_pass, ['report_verification_fee']);
+      if (!paidInvoice) {
         return res.status(402).json({
           requiresPayment: true,
           amount: paymentInfo.amount,
+          feeType: 'report_verification_fee',
           error: 'We could not confirm your payment for this report. If you were charged, contact support with your payment reference.'
         });
       }
     }
 
-    // === FIRST REPORT + NOT KYC VERIFIED: require NIN ===
-    if (!isKycVerified) {
-      if (!nin || !/^\d{11}$/.test(nin)) {
-        return res.status(400).json({
-          requiresNin: true,
-          error: 'NIN is required for identity verification on your first report',
-          message: 'Please provide your 11-digit National Identification Number (NIN)'
-        });
-      }
+    // === 2. IDENTITY: confirmed on every report ===
+    // People confirm with their NIN; business accounts may use their NIN or
+    // their CAC registration number. (Prembly is only used the first time a
+    // number is seen; this route never says which.)
+    const { rc_number } = req.body;
+    const isBusiness = req.user.role === 'business';
+    if (!nin && !(isBusiness && rc_number)) {
+      return res.status(400).json({
+        requiresNin: true,
+        paid: !!paidInvoice,
+        error: isBusiness ? 'Enter your NIN or your business registration number.' : 'Enter your 11-digit NIN to confirm your identity.'
+      });
+    }
+    try {
+      if (nin) await IdentityService.confirmNin(userId, nin, 'report');
+      else await IdentityService.confirmBusiness(userId, rc_number, 'report');
+    } catch (e) {
+      if (!(e instanceof IdentityService.IdentityError)) throw e;
+      return res.status(e.status || 400).json({ identityFailed: true, paid: !!paidInvoice, error: e.message });
+    }
 
-      // Perform KYC verification (calls Prembly, saves result)
-      const kycResult = await IdentityMatchingService.performKycVerification(userId, nin, null);
-
-      if (!kycResult.success) {
-        return res.status(400).json({
-          kycFailed: true,
-          error: kycResult.message,
-          message: 'Identity verification failed. Your report cannot be submitted at this time.',
-          details: 'The information retrieved from our verification partner could not be sufficiently matched with your account details. Please ensure your account name matches your NIN registration.'
-        });
+    // === 3. USE THE PAYMENT (once, just before the report is created) ===
+    if (paidInvoice) {
+      const used = await RevenueService.redeemPaidInvoice(userId, paidInvoice.reference, ['report_verification_fee']);
+      if (!used) {
+        return res.status(402).json({ requiresPayment: true, amount: paymentInfo.amount, feeType: 'report_verification_fee', error: 'This payment has already been used for another report. Please pay for this report.' });
       }
     }
+    const isKycVerified = true;
 
     // === CREATE REPORT ===
     const user = await Database.selectOne('users', 'region', 'id = ?', [userId]);
@@ -289,12 +285,7 @@ router.post('/', async (req, res) => {
     const reportId = Database.generateUUID();
 
     // Determine payment status
-    let paymentStatus = 'free';
-    if (paymentInfo.requiresPayment && pay_by_pass) {
-      paymentStatus = 'completed';
-    } else if (paymentInfo.requiresPayment) {
-      paymentStatus = 'pending';
-    }
+    const paymentStatus = paidInvoice ? 'completed' : 'free';
 
     await Database.transaction(async (connection) => {
       await connection.execute(
@@ -310,8 +301,8 @@ router.post('/', async (req, res) => {
           reportId, device_id, report_type, userId, description, new Date(occurred_at),
           location || null, evidence_url || null, 'open', caseId, lea?.id || null,
           police_report_number || null, circumstances || null, witness_info || null,
-          paymentStatus, pay_by_pass || null, paymentInfo.amount || null, reportNumber,
-          !isKycVerified && !!nin, isKycVerified ? 'skipped' : 'verified',
+          paymentStatus, paidInvoice ? paidInvoice.reference : null, paidInvoice ? paymentInfo.amount : null, reportNumber,
+          true, 'verified',
           new Date(), new Date()
         ]
       );
@@ -326,8 +317,13 @@ router.post('/', async (req, res) => {
     });
 
     // Mark payment invoice as paid if applicable
-    if (paymentStatus === 'completed' && pay_by_pass) {
-      await RevenueService.chargeForReport(userId, paymentInfo.amount, reportId, pay_by_pass);
+    if (paidInvoice) {
+      await RevenueService.chargeForReport(userId, paymentInfo.amount, reportId, paidInvoice.reference);
+    }
+
+    // ProveOwnership holds a stolen/lost item until the owner pays to release it
+    if (report_type === 'stolen' || report_type === 'lost') {
+      await CustodyService.hold(device_id, reportId, device.user_id).catch((e) => console.error('Custody hold failed:', e.message));
     }
 
     // Check if device was previously reported
@@ -402,7 +398,7 @@ router.post('/', async (req, res) => {
       oldValues: null,
       newValues: { 
         report_type, case_id: caseId, report_number: reportNumber,
-        payment_status: paymentStatus, kyc_performed: !isKycVerified && !!nin,
+        payment_status: paymentStatus, kyc_performed: true,
         device_previously_reported: !!previousReport
       },
       executionTime: 0
@@ -479,6 +475,7 @@ router.put('/:case_id', async (req, res) => {
     // Update report
     updateData.updated_at = new Date();
     await Database.update('reports', updateData, 'case_id = ?', [caseId]);
+    await CustodyService.onCaseStatus(existingReport, updateData.status, userId);
 
     // Log audit
     await Database.logAudit(

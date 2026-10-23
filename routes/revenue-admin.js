@@ -95,7 +95,7 @@ router.get('/fees/:key', authenticateToken, async (req, res) => {
     const validKeys = ['nin_verification_fee', 'report_verification_fee', 'device_check_free_tier',
       'device_check_fee', 'business_verification_fee', 'marketplace_commission_percent', 'device_recovery_fee',
       'business_onboarding_fee', 'business_onboarding_commission_percent', 'free_reports_per_device',
-      'nin_verification_per_device_fee'];
+      'nin_verification_per_device_fee', 'device_release_fee'];
     if (!validKeys.includes(key)) {
       return res.status(400).json({ error: 'Invalid fee key' });
     }
@@ -113,7 +113,7 @@ router.put('/fees/:key', requireAdmin, async (req, res) => {
     const validKeys = ['nin_verification_fee', 'report_verification_fee', 'device_check_free_tier',
       'device_check_fee', 'business_verification_fee', 'marketplace_commission_percent', 'device_recovery_fee',
       'business_onboarding_fee', 'business_onboarding_commission_percent', 'free_reports_per_device',
-      'nin_verification_per_device_fee'];
+      'nin_verification_per_device_fee', 'device_release_fee'];
 
     if (!validKeys.includes(key)) {
       return res.status(400).json({ error: 'Invalid fee key' });

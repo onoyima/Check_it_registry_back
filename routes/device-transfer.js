@@ -875,7 +875,7 @@ router.post('/business-to-user', authenticateToken, requireRole(['business', 'ad
 
     const device = await Database.selectOne('devices', '*', 'id = ? AND user_id = ?', [device_id, req.user.id]);
     if (!device) return res.status(404).json({ error: 'Device not found or not owned by your business' });
-    if (device.status === 'stolen' || device.status === 'lost') {
+    if (['stolen', 'lost', 'found'].includes(device.status)) {
       return res.status(400).json({ error: 'Cannot transfer stolen or lost devices' });
     }
 
@@ -915,7 +915,7 @@ router.post('/business-to-business', authenticateToken, requireRole(['business',
 
     const device = await Database.selectOne('devices', '*', 'id = ? AND user_id = ?', [device_id, req.user.id]);
     if (!device) return res.status(404).json({ error: 'Device not found or not owned by your business' });
-    if (device.status === 'stolen' || device.status === 'lost') {
+    if (['stolen', 'lost', 'found'].includes(device.status)) {
       return res.status(400).json({ error: 'Cannot transfer stolen or lost devices' });
     }
 

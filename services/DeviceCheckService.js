@@ -125,6 +125,8 @@ class DeviceCheckService {
           lastCheckDate: new Date()
         },
         ownershipLevel: device.ownership_level || 'registered',
+        // Reported items are held by ProveOwnership until released to the owner
+        custody: await require('./CustodyService').publicState(device.id).catch(() => null),
         ownershipWarning: warnings.ownership,
         securityAlerts: warnings.security,
         transferAvailable: checkResult.transferAvailable,
@@ -297,9 +299,10 @@ class DeviceCheckService {
     let score = 0;
     const factors = [];
 
-    // Check for headless browsers or automation
-    if (fingerprint.userAgent.includes('HeadlessChrome') || 
-        fingerprint.userAgent.includes('PhantomJS')) {
+    // Check for headless browsers or automation (a missing user agent used
+    // to crash the whole check)
+    const ua = String(fingerprint?.userAgent || '');
+    if (ua.includes('HeadlessChrome') || ua.includes('PhantomJS')) {
       score += 40;
       factors.push('headless_browser');
     }
@@ -323,8 +326,7 @@ class DeviceCheckService {
     }
 
     // Check for suspicious user agent patterns
-    if (fingerprint.userAgent.length < 50 || 
-        !fingerprint.userAgent.includes('Mozilla')) {
+    if (ua.length < 50 || !ua.includes('Mozilla')) {
       score += 10;
       factors.push('suspicious_user_agent');
     }

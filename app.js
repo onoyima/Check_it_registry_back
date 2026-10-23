@@ -267,6 +267,7 @@ app.use('/api/security', require('./routes/security-routes'));
 app.use('/api/lea-portal', require('./routes/lea-portal'));
 app.use('/api/audit', require('./routes/audit-trail'));
 app.use('/api/found-device', require('./routes/found-device'));
+app.use('/api/custody', require('./routes/custody'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/system-health', require('./routes/system-health'));
 app.use('/api/notifications', require('./routes/notifications'));

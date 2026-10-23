@@ -57,6 +57,9 @@ function photo(kind, alt = false) {
   const globalSetup = require('../system/global-setup');
   await globalSetup();
   require('../system/paystack-fake').install();
+  // Identity checks use a stand-in for Prembly (never the real service)
+  const prembly = require('../system/prembly-fake');
+  prembly.install();
   const h = require('../system/helpers');
   await seed(h);
 
@@ -64,6 +67,23 @@ function photo(kind, alt = false) {
   const tools = express.Router();
   tools.use(express.json());
   tools.get('/state', (req, res) => res.json(h.state()));
+  // A NIN (or CAC number) that the Prembly stand-in knows, for these names
+  // (the same name always gets the same NIN, as a real person has one NIN)
+  const ninByName = new Map();
+  tools.post('/person', (req, res) => {
+    const key = `${req.body.first_name}|${req.body.last_name}`.toLowerCase();
+    if (!ninByName.has(key)) ninByName.set(key, prembly.addPerson(req.body.first_name, req.body.last_name));
+    res.json({ nin: ninByName.get(key) });
+  });
+  tools.post('/company', (req, res) => res.json({ rc: prembly.addCompany(req.body.company_name, { directors: req.body.directors || [] }) }));
+  // Confirm an item as the emailed link would
+  tools.post('/confirm-item', async (req, res) => { await h.confirmItem('user', req.body.device); res.json({ ok: true }) });
+  tools.get('/prembly-calls', (req, res) => res.json({ count: prembly.callsFor(String(req.query.number || '')) }));
+  // The newest unpaid invoice of a user, so a test can "pay on Paystack"
+  tools.get('/last-invoice', async (req, res) => {
+    const [row] = await h.Database.query('SELECT * FROM payment_invoices WHERE user_id = ? ORDER BY created_at DESC LIMIT 1', [req.query.user]).catch(() => [null]);
+    res.json(row || {});
+  });
   tools.get('/outbox', (req, res) => res.json(h.outbox.messages.filter((m) => !req.query.to || String(m.to).includes(req.query.to))));
   tools.get('/otp', async (req, res) => {
     const [row] = await h.Database.query('SELECT otp_code FROM otps WHERE user_id = ? AND (? = \'\' OR otp_type = ?) ORDER BY created_at DESC LIMIT 1', [req.query.user, req.query.type || '', req.query.type || '']);
