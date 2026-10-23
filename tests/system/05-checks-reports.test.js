@@ -130,3 +130,19 @@ describe('reporting an item stolen', () => {
     expectStatus(await api().post('/api/report-management').set(auth('user2')).send({ device_id: phone.id, report_type: 'stolen', description: 'x', occurred_at: new Date().toISOString() }), 403, 404);
   });
 });
+
+describe('there is no public check', () => {
+  // Every way of looking an item up needs a signed-in account
+  const lookups = [
+    ['post', '/api/public-check/enhanced'],
+    ['get', '/api/public-check?imei=356938035643809'],
+    ['get', '/api/public-check/history?identifier=356938035643809'],
+    ['get', '/api/public-check/mine'],
+    ['get', '/api/found-device/check?imei=356938035643809'],
+    ['post', '/api/found-device/report'],
+  ];
+  test.each(lookups)('%s %s refuses visitors', async (method, url) => {
+    const r = await api()[method](url).send({ imei: '356938035643809', deviceIdentifier: '356938035643809' });
+    expect(r.status).toBe(401);
+  });
+});

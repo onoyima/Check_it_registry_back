@@ -8,8 +8,9 @@ const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 const router = express.Router();
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
-// Report a found device (public endpoint)
-router.post('/report', async (req, res) => {
+// Report a found device. Signed-in people only: the answers say whether an
+// item is registered and reported, so an open endpoint would be a public check.
+router.post('/report', authenticateToken, async (req, res) => {
   try {
     const { 
       imei, 
@@ -202,8 +203,8 @@ router.post('/report', async (req, res) => {
   }
 });
 
-// Check if a device can be reported as found (public endpoint)
-router.get('/check', async (req, res) => {
+// Check if a device can be reported as found (signed-in people only)
+router.get('/check', authenticateToken, async (req, res) => {
   try {
     const { imei, serial } = req.query;
 
