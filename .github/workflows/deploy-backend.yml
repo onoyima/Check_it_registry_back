@@ -51,19 +51,10 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key" \
             ./ "prove-deploy@${{ secrets.VPS_HOST }}:/home/prove-deploy/apps/proveownership-backend/"
 
-      - name: Ensure server environment
+      - name: Check server .env
         run: |
-          ssh -i ~/.ssh/deploy_key "prove-deploy@${{ secrets.VPS_HOST }}" bash -s <<'EOF'
-          set -e
-          cd /home/prove-deploy/apps/proveownership-backend
-          if [ ! -f .env ]; then
-            echo "ERROR: .env is missing at $(pwd)/.env. It is excluded from rsync; create it on the server first."
-            exit 1
-          fi
-          grep -qE '^[[:space:]]*TRUST_PROXY[[:space:]]*=' .env || echo 'TRUST_PROXY=1' >> .env
-          grep -qE '^[[:space:]]*NODE_ENV[[:space:]]*=' .env || echo 'NODE_ENV=production' >> .env
-          echo "Environment ready: $(pwd)/.env (TRUST_PROXY and NODE_ENV set)"
-          EOF
+          ssh -i ~/.ssh/deploy_key "prove-deploy@${{ secrets.VPS_HOST }}" \
+            "test -f /home/prove-deploy/apps/proveownership-backend/.env && echo 'Server .env found (left untouched)' || (echo 'ERROR: server .env is missing'; exit 1)"
 
       - name: Install production dependencies and restart
         run: |
