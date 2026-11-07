@@ -140,12 +140,12 @@ class FileUploadService {
 
   // Known upload folders. Anything else is rejected.
   static get SUBDIRS() {
-    return ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc', 'profiles', 'kyc'];
+    return ['proofs', 'devices', 'evidence', 'transfers', 'ids', 'misc', 'profiles', 'kyc', 'selfies'];
   }
 
   // Folders whose files are private to the uploader (plus admins / police).
   static get PRIVATE_SUBDIRS() {
-    return ['proofs', 'evidence', 'ids', 'kyc', 'transfers'];
+    return ['proofs', 'evidence', 'ids', 'kyc', 'transfers', 'selfies'];
   }
 
   // Resolve a file inside an upload folder, refusing path traversal

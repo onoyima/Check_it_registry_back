@@ -86,7 +86,7 @@ router.get('/stats', async (req, res) => {
 
       // Platform fee percent
       Database.query(`
-        SELECT setting_value FROM system_settings WHERE setting_key = 'platform_fee_percent'
+        SELECT setting_value FROM system_settings WHERE setting_key = 'marketplace_commission_percent'
       `),
 
       // Marketplace stats
@@ -150,7 +150,7 @@ router.get('/stats', async (req, res) => {
         total_held_amount: escrow.total_held_amount || 0,
         total_fees_collected: escrow.total_fees_collected || 0
       },
-      platform_fee_percent: platformFeeRow.length > 0 ? platformFeeRow[0].setting_value : '2.50',
+      platform_fee_percent: platformFeeRow.length > 0 ? platformFeeRow[0].setting_value : null,
       marketplace: {
         total_listings: marketplaceStats.total_listings || 0,
         active_listings: marketplaceStats.active_listings || 0,
@@ -470,64 +470,26 @@ router.get('/devices/:id', async (req, res) => {
       LIMIT 50
     `, [deviceId]);
 
-    // Get public device check history
+    // Who checked this item: the checks recorded by Check an item, with
+    // the checker's account, location, IP address, browser ID and photo
     let check_history = [];
     try {
-      // Try the enhanced device_checks table first (if present)
       check_history = await Database.query(`
-        SELECT 
-          id,
-          device_id,
-          query,
-          checker_user_id,
-          checker_name,
-          checker_email,
-          ip_address,
-          location_address,
-          check_result,
-          device_status_at_check,
-          created_at
-        FROM device_checks
-        WHERE device_id = ?
-        ORDER BY created_at DESC
-        LIMIT 50
-      `, [deviceId]);
+        SELECT l.id, l.device_id, l.searched_identifier AS query, l.checker_user_id,
+               TRIM(CONCAT_WS(' ', u.first_name, u.middle_name, u.last_name)) AS checker_name, u.name AS checker_display_name,
+               u.email AS checker_email, u.phone AS checker_phone,
+               l.ip_address, l.reported_ip, l.browser_device_id, l.user_agent, l.selfie_url,
+               l.latitude, l.longitude, l.location_accuracy, l.is_own_item, l.fee_paid,
+               l.check_result, l.certificate_code, l.created_at
+          FROM device_check_logs l
+          LEFT JOIN users u ON u.id = l.checker_user_id
+         WHERE l.device_id = ?
+         ORDER BY l.created_at DESC
+         LIMIT 50`, [deviceId]);
+      check_history = check_history.map((c) => ({ ...c, checker_name: c.checker_name || c.checker_display_name || null }));
     } catch (e) {
-      // Fallback to basic imei_checks logs by matching device identifiers
-      const devRow = device[0];
-      const identifiers = [];
-      if (devRow?.imei) identifiers.push(devRow.imei);
-      if (devRow?.serial) identifiers.push(devRow.serial);
-      if (identifiers.length > 0) {
-        const placeholders = identifiers.map(() => '?').join(',');
-        try {
-          const fallback = await Database.query(`
-            SELECT 
-              id,
-              query,
-              ip_address,
-              created_at,
-              NULL AS checker_user_id,
-              NULL AS checker_name,
-              NULL AS checker_email,
-              NULL AS location_address,
-              NULL AS check_result,
-              NULL AS device_status_at_check
-            FROM imei_checks
-            WHERE query IN (${placeholders})
-            ORDER BY created_at DESC
-            LIMIT 50
-          `, identifiers);
-          check_history = fallback.map(row => ({
-            id: row.id,
-            query: row.query,
-            ip_address: row.ip_address,
-            created_at: row.created_at
-          }));
-        } catch (e2) {
-          check_history = [];
-        }
-      }
+      console.error('Check history error:', e.message);
+      check_history = [];
     }
 
     res.json({

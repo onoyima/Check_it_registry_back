@@ -37,9 +37,10 @@ async function seed(h) {
     });
     if (r.status >= 300) console.warn('[e2e] listing failed', r.status, r.body);
   }
-  // Plenty of free checks, so repeated runs don't hit the payment step
-  // (the payment step has its own test, which lowers this for a moment)
-  await Database.query("UPDATE system_settings SET setting_value = '100000' WHERE setting_key = 'device_check_free_tier'");
+  // Plenty of free checks of other people's items, so repeated runs don't
+  // hit the payment step (the payment step has its own test, which lowers
+  // this for a moment)
+  await Database.query("UPDATE system_settings SET setting_value = '100000' WHERE setting_key = 'device_check_free_others'");
   // One item for the main user so "My items" is not empty
   const mine = await h.registerItem('user', { category: 'mobile_phone', brand: 'Samsung', model: 'Galaxy S23', imei: h.makeImei(), serial: h.makeSerial(), region: 'Lagos' });
   await h.confirmItem('user', mine.device?.id || mine.id || mine.deviceId);

@@ -15,5 +15,8 @@ module.exports = {
   verifyPayment: notReady,     // has the buyer paid into the escrow?
   release: notReady,           // release the escrow to the seller
   refund: notReady,            // return the escrow to the buyer
+  listBanks: notReady,         // banks as Vesicash codes them
+  resolveAccount: notReady,    // account holder's name for a payout account
+  prepareRecipient: notReady,
   parseWebhook: () => ({ valid: false }),
 };

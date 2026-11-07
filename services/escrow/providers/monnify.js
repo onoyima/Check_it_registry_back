@@ -62,11 +62,32 @@ module.exports = {
     return { paid, amount: paid ? Number(b.amountPaid) : 0, currency: b.currencyCode || 'NGN', providerReference: b.transactionReference };
   },
 
+  // Banks as Monnify names and codes them
+  async listBanks() {
+    const r = await axios.get(`${BASE()}/api/v1/banks`, { headers: await authHeaders(), timeout: 20000 });
+    const list = r.data?.responseBody;
+    if (!Array.isArray(list) || !list.length) throw new Error('Monnify returned no banks');
+    return list.map((b) => ({ name: b.name, code: String(b.code) }));
+  },
+
+  // The account holder's name for an account number (Monnify's account check)
+  async resolveAccount(accountNumber, bankCode) {
+    const r = await axios.get(`${BASE()}/api/v1/disbursements/account/validate`, {
+      params: { accountNumber, bankCode }, headers: await authHeaders(), timeout: 20000,
+    });
+    const name = r.data?.responseBody?.accountName;
+    if (!r.data?.requestSuccessful || !name) throw Object.assign(new Error(r.data?.responseMessage || 'We could not find that account'), { status: 400 });
+    return { accountName: name };
+  },
+
+  // Nothing to set up in advance: Monnify pays straight to the account
+  async prepareRecipient() { return {}; },
+
   async release({ sellerId, amount, reference, reason }) {
     // Native escrow (when switched on for your account): approve the held
     // payment here using Monnify's escrow endpoint, then return.
-    const bank = await Database.selectOne('seller_bank_accounts', '*', 'user_id = ? AND is_verified = 1', [sellerId]);
-    if (!bank) throw new Error('Seller has no verified bank account for payout');
+    const bank = await Database.selectOne('seller_bank_accounts', '*', "user_id = ? AND is_verified = 1 AND provider = 'monnify'", [sellerId]);
+    if (!bank) throw new Error('The seller needs to confirm their bank account for payouts');
     const r = await axios.post(`${BASE()}/api/v2/disbursements/single`, {
       amount: Number(amount), reference, narration: reason || 'Prove Ownership payout',
       destinationBankCode: bank.bank_code, destinationAccountNumber: bank.account_number,

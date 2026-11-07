@@ -21,9 +21,7 @@ class BusinessVerificationService {
   }
 
   static async getVerificationFee() {
-    const row = await Database.selectOne('system_settings', 'setting_value',
-      "setting_key = 'business_verification_fee'");
-    return row ? parseFloat(row.setting_value) : 2500;
+    return require('./RevenueService').getFee('business_verification_fee');
   }
 
   static async verifyAndRecord(userId, rcNumber, companyName, companyType, paymentReference, feeTransactionId) {

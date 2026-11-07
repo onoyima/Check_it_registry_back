@@ -47,13 +47,7 @@ const MIGRATIONS = [
       await db.query(`ALTER TABLE delivery_confirmations ADD CONSTRAINT delconf_fk_buyer FOREIGN KEY (buyer_id) REFERENCES users(id) ON DELETE CASCADE`).catch(() => {});
       await db.query(`ALTER TABLE delivery_confirmations ADD CONSTRAINT delconf_fk_seller FOREIGN KEY (seller_id) REFERENCES users(id) ON DELETE CASCADE`).catch(() => {});
 
-      const existing = await db.query("SELECT id FROM system_settings WHERE setting_key = 'platform_fee_percent'");
-      if (existing.length === 0) {
-        await db.query(
-          "INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public) VALUES (UUID(), ?, ?, ?, ?, ?)",
-          ['platform_fee_percent', '2.50', 'number', 'Platform fee percentage deducted from seller payout on each sale', false]
-        );
-      }
+      // (Prices are never seeded: the admin sets every one on the Prices page)
     }
   },
   {
@@ -248,13 +242,7 @@ const MIGRATIONS = [
     ],
     seed: async () => {
       const feeSettings = [
-        { key: 'nin_verification_fee', value: '500', description: 'Fee for NIN identity verification' },
-        { key: 'report_verification_fee', value: '300', description: 'Fee for each device report after the first' },
-        { key: 'device_check_free_tier', value: '3', description: 'Free device checks per user' },
-        { key: 'device_check_fee', value: '100', description: 'Fee per device check after free tier' },
-        { key: 'business_verification_fee', value: '2500', description: 'Fee for CAC business verification' },
-        { key: 'marketplace_commission_percent', value: '5.00', description: 'Commission percentage on marketplace sales' },
-        { key: 'device_recovery_fee', value: '2000', description: 'Fee for device recovery process' },
+        // (No prices here: the admin sets every price on the Prices page)
         { key: 'nin_verification_provider', value: 'prembly', description: 'Active NIN verification provider' },
         { key: 'cac_verification_provider', value: 'cac_ng', description: 'Active CAC verification provider' },
       ];
@@ -303,10 +291,7 @@ const MIGRATIONS = [
       `ALTER TABLE transactions MODIFY COLUMN type ENUM('marketplace_purchase','marketplace_sale','subscription','service_fee','recovery_service','device_check_fee','report_verification_fee','marketplace_commission','nin_verification_fee','device_recovery_fee','business_verification_fee','business_onboarding_commission') NOT NULL`,
     ],
     seed: async () => {
-      const extras = [
-        { key: 'business_onboarding_fee', value: '5000', description: 'Fee for business customer onboarding' },
-        { key: 'business_onboarding_commission_percent', value: '30', description: 'Commission percent for business on each onboarding' },
-      ];
+      const extras = []; // prices are set by the admin, never seeded
       for (const s of extras) {
         const existing = await db.query('SELECT id FROM system_settings WHERE setting_key = ?', [s.key]);
         if (existing.length === 0) {
@@ -371,21 +356,6 @@ const MIGRATIONS = [
         'ALTER TABLE device_nin_verification ADD CONSTRAINT dnin_fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE'
       ).catch(() => {});
 
-      const existing = await db.query("SELECT id FROM system_settings WHERE setting_key = 'free_reports_per_device'");
-      if (existing.length === 0) {
-        await db.query(
-          `INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
-           VALUES (UUID(), 'free_reports_per_device', '3', 'number', 'Number of free reports per device before payment required', false)`
-        );
-      }
-
-      const existingNinFee = await db.query("SELECT id FROM system_settings WHERE setting_key = 'nin_verification_per_device_fee'");
-      if (existingNinFee.length === 0) {
-        await db.query(
-          `INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
-           VALUES (UUID(), 'nin_verification_per_device_fee', '500', 'number', 'Fee for per-device NIN verification', false)`
-        );
-      }
     }
   },
   {
@@ -479,13 +449,6 @@ const MIGRATIONS = [
       `ALTER TABLE users ADD COLUMN payout_bank_name VARCHAR(100) DEFAULT NULL`,
       `ALTER TABLE users ADD COLUMN payout_account_number VARCHAR(20) DEFAULT NULL`,
       `ALTER TABLE users ADD COLUMN payout_account_name VARCHAR(255) DEFAULT NULL`,
-      // Business fee settings
-      `INSERT IGNORE INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
-       VALUES (UUID(), 'business_verification_fee', '2500', 'number', 'Fee for CAC business verification', false)`,
-      `INSERT IGNORE INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
-       VALUES (UUID(), 'business_onboarding_fee', '5000', 'number', 'Fee for business customer onboarding', false)`,
-      `INSERT IGNORE INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public)
-       VALUES (UUID(), 'business_onboarding_commission_percent', '30', 'number', 'Commission percent for business on each onboarding', false)`,
     ],
     seed: async () => {
       // Add FK constraints gracefully
@@ -1211,7 +1174,6 @@ const MIGRATIONS = [
           await db.query("INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public) VALUES (UUID(), ?, ?, 'number', ?, 0)", [key, value, description]);
         }
       };
-      await put('device_release_fee', '2000', 'Fee the owner pays to get back an item ProveOwnership held after it was reported');
       // Every report is paid now
       await db.query("UPDATE system_settings SET description = 'Fee for every device report' WHERE setting_key = 'report_verification_fee'").catch(() => {});
       // Items already reported before this change: ProveOwnership holds them too
@@ -1244,6 +1206,54 @@ const MIGRATIONS = [
       };
       await put('module_marketplace', 'off', 'Marketplace on or off (off until payments and documents are ready)');
       await put('marketplace_escrow_provider', 'monnify', 'Who holds marketplace payments until delivery: monnify, flutterwave, vesicash or paystack');
+    },
+  },
+  {
+    // One price list set by the admin; checks with selfie, real IP, browser
+    // id and certificates; payout accounts tied to a payment provider.
+    name: '029_prices_checks_and_payout_accounts',
+    sql: [],
+    seed: async () => {
+      const q = (sql, params) => db.query(sql, params).catch((e) => { if (!/Duplicate (column|key)|check that it exists|Can't DROP/i.test(e.message)) console.warn('029:', e.message); });
+      // One marketplace commission: keep the admin's "marketplace commission";
+      // use the old "platform fee" only if there was no commission at all
+      const [commission] = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'marketplace_commission_percent'");
+      const [platform] = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'platform_fee_percent'");
+      if (!commission && platform) {
+        await q("INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public) VALUES (UUID(), 'marketplace_commission_percent', ?, 'number', 'Marketplace commission', 0)", [platform.setting_value]);
+      }
+      // Prices that no longer exist (free check tier, NIN-only fees, recovery
+      // packages, the separate platform fee)
+      await q(`DELETE FROM system_settings WHERE setting_key IN ('platform_fee_percent', 'device_check_free_tier', 'nin_verification_fee',
+        'nin_verification_per_device_fee', 'free_reports_per_device', 'device_recovery_fee')`);
+      // The number of free checks of other people's items (the owner's rule:
+      // 3). The admin can change it on the Prices page.
+      const [free] = await db.query("SELECT id FROM system_settings WHERE setting_key = 'device_check_free_others'");
+      if (!free) await q("INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public) VALUES (UUID(), 'device_check_free_others', '3', 'number', \"Free checks of other people's items\", 0)");
+
+      // Item checks: who checked, from where, with what, and their photo
+      for (const sql of [
+        'ALTER TABLE device_check_logs ADD COLUMN searched_identifier VARCHAR(64) NULL',
+        'ALTER TABLE device_check_logs ADD COLUMN is_own_item TINYINT(1) NOT NULL DEFAULT 0',
+        'ALTER TABLE device_check_logs ADD COLUMN selfie_url VARCHAR(255) NULL',
+        'ALTER TABLE device_check_logs ADD COLUMN browser_device_id VARCHAR(64) NULL',
+        'ALTER TABLE device_check_logs ADD COLUMN reported_ip VARCHAR(45) NULL',
+        'ALTER TABLE device_check_logs ADD COLUMN certificate_code VARCHAR(20) NULL',
+        'ALTER TABLE device_check_logs ADD COLUMN fee_paid DECIMAL(12,2) NULL',
+        'ALTER TABLE device_check_logs ADD UNIQUE KEY uq_check_certificate (certificate_code)',
+        'ALTER TABLE device_check_logs ADD KEY idx_checker_own (checker_user_id, is_own_item)',
+        "ALTER TABLE device_check_logs MODIFY COLUMN check_type VARCHAR(30) NOT NULL DEFAULT 'public_check'",
+        "ALTER TABLE device_check_logs MODIFY COLUMN check_result VARCHAR(20) NULL",
+      ]) await q(sql);
+      // Earlier checks: was the checker the owner at the time?
+      await q(`UPDATE device_check_logs l JOIN devices d ON l.device_id = d.id
+               SET l.is_own_item = 1 WHERE l.checker_user_id IS NOT NULL AND d.user_id = l.checker_user_id`);
+      // The old "MAC address" was made up from browser details: not a real MAC
+      await q('UPDATE device_check_logs SET mac_address = NULL');
+
+      // Payout accounts belong to the provider that checked them
+      await q('ALTER TABLE seller_bank_accounts ADD COLUMN provider VARCHAR(20) NULL');
+      await q("UPDATE seller_bank_accounts SET provider = 'paystack' WHERE provider IS NULL");
     },
   },
 ];

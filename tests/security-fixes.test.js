@@ -4,6 +4,9 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'x'.repeat(48);
 process.env.KYC_ENCRYPTION_KEY = 'y'.repeat(48);
 process.env.PAYSTACK_SECRET_KEY = 'sk_test_demo';
+jest.mock('../services/ModuleService', () => ({
+  requireModule: () => (_req, _res, next) => next(),
+}));
 const crypto = require('crypto');
 const request = require('supertest');
 const { app } = require('../app');

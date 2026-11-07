@@ -1,77 +1,109 @@
 const Database = require('../config');
 
-const DEFAULT_FEES = {
-  nin_verification_fee: 500,
-  report_verification_fee: 300,
-  device_check_free_tier: 3,
-  device_check_fee: 100,
-  business_verification_fee: 2500,
-  marketplace_commission_percent: 5.00,
-  device_recovery_fee: 2000,
-  device_release_fee: 2000,
-  business_onboarding_fee: 5000,
-  business_onboarding_commission_percent: 30,
-  free_reports_per_device: 3,
-  nin_verification_per_device_fee: 500,
-};
+// Everything Prove Ownership charges for, and the numbers that go with it.
+// Every amount is set by an admin on the Prices page and stored in
+// system_settings; there are no amounts in the code. If a price has not been
+// set, the action that needs it is refused with a clear message (it is never
+// charged at a made-up amount).
+//   unit: 'naira' (an amount), 'percent' (0-100) or 'count' (a whole number)
+const PRICE_LIST = [
+  { key: 'report_verification_fee', unit: 'naira', label: 'Report a stolen or lost item',
+    help: 'Paid on every report, through Paystack.' },
+  { key: 'device_check_fee', unit: 'naira', label: "Check someone else's item",
+    help: 'Paid per check once the free checks below are used. Checking your own item is always free.' },
+  { key: 'device_check_free_others', unit: 'count', label: "Free checks of other people's items",
+    help: "How many checks of items that aren't theirs each person gets before paying." },
+  { key: 'device_release_fee', unit: 'naira', label: 'Release fee',
+    help: 'Paid by the owner to get a found item back from Prove Ownership, through Paystack.' },
+  { key: 'business_verification_fee', unit: 'naira', label: 'Business verification',
+    help: 'Paid once by a business to verify with its CAC number or the owner\'s NIN, through Paystack.' },
+  { key: 'business_onboarding_fee', unit: 'naira', label: 'Customer onboarding by a business',
+    help: 'Paid by a business each time it registers a walk-in customer and their item, through Paystack.' },
+  { key: 'business_onboarding_commission_percent', unit: 'percent', label: "Business's share of the onboarding fee",
+    help: 'The part of each onboarding fee credited to the business.' },
+  { key: 'marketplace_commission_percent', unit: 'percent', label: 'Marketplace commission',
+    help: "Taken from the seller's payout on each marketplace sale." },
+];
+const PRICE_KEYS = PRICE_LIST.map((p) => p.key);
+
+class PriceNotSetError extends Error {
+  constructor(item) {
+    super(`The price for "${item.label}" hasn't been set yet. Please try again later.`);
+    this.status = 503;
+    this.priceNotSet = item.key;
+  }
+}
 
 class RevenueService {
+  static get PRICE_LIST() { return PRICE_LIST; }
+  static get PriceNotSetError() { return PriceNotSetError; }
+
+  // The admin's value for this price. Throws PriceNotSetError if it is
+  // missing or not a valid number.
   static async getFee(key) {
-    const row = await Database.selectOne('system_settings', 'setting_value',
-      'setting_key = ?', [key]);
-    if (row) return parseFloat(row.setting_value);
-    if (DEFAULT_FEES[key] !== undefined) {
-      console.warn(`[RevenueService] Fee '${key}' not found in system_settings, using hardcoded fallback: ${DEFAULT_FEES[key]}`);
-      return DEFAULT_FEES[key];
-    }
-    console.error(`[RevenueService] Fee '${key}' not found in system_settings and no fallback defined.`);
-    return 0;
+    const item = PRICE_LIST.find((p) => p.key === key);
+    if (!item) throw new Error(`Unknown price "${key}"`);
+    const row = await Database.selectOne('system_settings', 'setting_value', 'setting_key = ?', [key]);
+    const raw = row && row.setting_value != null ? String(row.setting_value).trim() : '';
+    const value = Number(raw);
+    if (raw === '' || !Number.isFinite(value) || value < 0) throw new PriceNotSetError(item);
+    return value;
+  }
+
+  // Check a value an admin typed for a price; returns the number or throws (400)
+  static validatePrice(key, value) {
+    const item = PRICE_LIST.find((p) => p.key === key);
+    if (!item) throw Object.assign(new Error('Unknown price'), { status: 400 });
+    const n = typeof value === 'string' ? Number(value.trim()) : Number(value);
+    const bad = (msg) => Object.assign(new Error(msg), { status: 400 });
+    if (value === '' || value == null || !Number.isFinite(n) || n < 0) throw bad('Enter a number of 0 or more');
+    if (item.unit === 'percent' && n > 100) throw bad('A percentage can be at most 100');
+    if (item.unit === 'count' && !Number.isInteger(n)) throw bad('Enter a whole number');
+    if (item.unit === 'naira' && Math.round(n * 100) !== n * 100) throw bad('Use at most 2 decimal places');
+    return n;
   }
 
   static async setFee(key, value, adminId) {
-    const existing = await Database.selectOne('system_settings', 'id',
-      'setting_key = ?', [key]);
+    const n = this.validatePrice(key, value);
+    const item = PRICE_LIST.find((p) => p.key === key);
+    const existing = await Database.selectOne('system_settings', 'id', 'setting_key = ?', [key]);
     if (existing) {
       await Database.update('system_settings',
-        { setting_value: String(value), updated_by: adminId, updated_at: new Date() },
+        { setting_value: String(n), updated_by: adminId, updated_at: new Date() },
         'setting_key = ?', [key]);
     } else {
       await Database.insert('system_settings', {
         id: Database.generateUUID(),
         setting_key: key,
-        setting_value: String(value),
+        setting_value: String(n),
         setting_type: 'number',
-        description: key,
+        description: item.label,
         updated_by: adminId,
         updated_at: new Date()
       });
     }
-    return { key, value };
+    return { key, value: n };
   }
 
+  // The full price list for the admin page: each item with its value, or
+  // null when it hasn't been set yet
+  static async getPriceList() {
+    const rows = await Database.query(
+      `SELECT setting_key, setting_value, updated_at FROM system_settings WHERE setting_key IN (${PRICE_KEYS.map(() => '?').join(',')})`,
+      PRICE_KEYS);
+    const byKey = Object.fromEntries(rows.map((r) => [r.setting_key, r]));
+    return PRICE_LIST.map((p) => {
+      const raw = byKey[p.key]?.setting_value;
+      const n = raw == null || String(raw).trim() === '' ? NaN : Number(raw);
+      return { ...p, value: Number.isFinite(n) && n >= 0 ? n : null, updated_at: byKey[p.key]?.updated_at || null };
+    });
+  }
+
+  // { key: value | null } for every price
   static async getAllFees() {
-    const fees = {};
-    // No longer charged: NIN checks are part of each report now, and there
-    // are no free reports
-    const retired = ['nin_verification_fee', 'free_reports_per_device', 'nin_verification_per_device_fee'];
-    for (const key of Object.keys(DEFAULT_FEES).filter((k) => !retired.includes(k))) {
-      fees[key] = await this.getFee(key);
-    }
-    return fees;
-  }
-
-  static async getUserFreeCheckCount(userId) {
-    const [{ count }] = await Database.query(
-      `SELECT COUNT(*) as count FROM device_check_logs WHERE checker_user_id = ? AND is_paid = 0`,
-      [userId]
-    );
-    return count;
-  }
-
-  static async deductFreeCheckCredit(userId) {
-    const freeTier = await this.getFee('device_check_free_tier');
-    const used = await this.getUserFreeCheckCount(userId);
-    return used < freeTier;
+    const out = {};
+    for (const p of await this.getPriceList()) out[p.key] = p.value;
+    return out;
   }
 
   static async chargeForCheck(userId, amount, reference) {
@@ -105,26 +137,6 @@ class RevenueService {
     return transactionId;
   }
 
-  static async deductMarketplaceCommission(listingId, saleAmount, sellerId) {
-    const commissionPercent = await this.getFee('marketplace_commission_percent');
-    const commissionAmount = parseFloat((saleAmount * commissionPercent / 100).toFixed(2));
-    const sellerAmount = parseFloat((saleAmount - commissionAmount).toFixed(2));
-
-    const feeTxnId = Database.generateUUID();
-    await Database.insert('transactions', {
-      id: feeTxnId,
-      user_id: sellerId,
-      type: 'marketplace_commission',
-      amount: commissionAmount,
-      status: 'completed',
-      related_entity_id: listingId,
-      description: `Marketplace commission (${commissionPercent}%)`,
-      created_at: new Date()
-    });
-
-    return { commissionAmount, sellerAmount, feeTxnId };
-  }
-
   static async createPaymentInvoice(userId, amount, purpose, reference, metadata = {}) {
     const invoiceId = Database.generateUUID();
     await Database.insert('payment_invoices', {
@@ -147,9 +159,8 @@ class RevenueService {
 
   // Fee keys a user can be invoiced for (amounts always come from settings)
   static get PAYABLE_FEES() {
-    return ['device_check_fee', 'report_verification_fee', 'nin_verification_fee',
-      'business_verification_fee', 'device_recovery_fee', 'business_onboarding_fee',
-      'nin_verification_per_device_fee', 'device_release_fee'];
+    return ['device_check_fee', 'report_verification_fee', 'business_verification_fee',
+      'business_onboarding_fee', 'device_release_fee'];
   }
 
   // Confirm with Paystack that an invoice was paid in full; marks it completed.
@@ -225,36 +236,16 @@ class RevenueService {
     return count;
   }
 
-  static async getUserDeviceReportCount(userId, deviceId) {
-    const [{ count }] = await Database.query(
-      `SELECT COUNT(*) as count FROM reports WHERE reporter_id = ? AND device_id = ?`,
-      [userId, deviceId]
-    );
-    return count;
-  }
-
-  static async shouldChargeForReport(userId, deviceId) {
-    const freeReportsPerDevice = await this.getFee('free_reports_per_device');
-    const deviceReportCount = await this.getUserDeviceReportCount(userId, deviceId);
-    return deviceReportCount >= freeReportsPerDevice;
-  }
-
-  /**
-   * Determine if a user's next report requires payment.
-   * Logic: Report #1 = paid, #2 = free, #3 = free, #4+ = paid.
-   * Count is per USER (across all devices), not per device.
-   * @returns {{ requiresPayment: boolean, reportNumber: number, amount?: number, currency?: string, reason?: string }}
-   */
-  // Every report is paid: the admin's "report verification fee". (There used
-  // to be free reports after the first; there are none now.) A fee of 0
-  // switches the payment step off.
+  // Every report is paid: the admin's "report" price. If the admin sets it
+  // to 0 the payment step is skipped; if it isn't set, reporting is refused
+  // until it is (getFee throws).
   static async shouldChargeForUserReport(userId) {
     const [{ count }] = await Database.query(
       `SELECT COUNT(*) as count FROM reports
        WHERE reporter_id = ? AND status IN ('open', 'under_review', 'resolved')`,
       [userId]
     );
-    const fee = Number(await this.getFee('report_verification_fee')) || 0;
+    const fee = await this.getFee('report_verification_fee');
     return {
       requiresPayment: fee > 0,
       reportNumber: Number(count) + 1,
@@ -275,7 +266,9 @@ class RevenueService {
     if (!['paystack', 'monify'].includes(provider)) {
       throw new Error('Invalid payment provider. Must be paystack or monify.');
     }
-    await this.setFee('active_payment_provider', provider, adminId);
+    const row = await Database.selectOne('system_settings', 'id', "setting_key = 'active_payment_provider'");
+    if (row) await Database.update('system_settings', { setting_value: provider, updated_by: adminId, updated_at: new Date() }, 'id = ?', [row.id]);
+    else await Database.insert('system_settings', { id: Database.generateUUID(), setting_key: 'active_payment_provider', setting_value: provider, setting_type: 'string', description: 'Payment provider for fees', updated_by: adminId, updated_at: new Date() });
     return provider;
   }
 

@@ -51,6 +51,14 @@ module.exports = async () => {
   // The tests use the marketplace, with Paystack as the stand-in escrow provider
   await Database.query("UPDATE system_settings SET setting_value = 'on' WHERE setting_key = 'module_marketplace'");
   await Database.query("UPDATE system_settings SET setting_value = 'paystack' WHERE setting_key = 'marketplace_escrow_provider'");
+  // Prices, as an admin would set them on the Prices page (nothing is
+  // charged at an amount that isn't set)
+  const prices = { report_verification_fee: 300, device_check_fee: 100, device_check_free_others: 3, device_release_fee: 2000,
+    business_verification_fee: 2500, business_onboarding_fee: 5000, business_onboarding_commission_percent: 30, marketplace_commission_percent: 5 };
+  for (const [key, value] of Object.entries(prices)) {
+    await Database.query('DELETE FROM system_settings WHERE setting_key = ?', [key]);
+    await Database.query("INSERT INTO system_settings (id, setting_key, setting_value, setting_type, description, is_public) VALUES (UUID(), ?, ?, 'number', ?, 0)", [key, String(value), key]);
+  }
   await Database.query("INSERT INTO law_enforcement_agencies (id, agency_name, contact_email, region, active) VALUES (UUID(), 'Lagos State Police Command', 'police@test.proveownership.local', 'Lagos', 1)");
   const h = require('./helpers');
   const state = { users: {} };

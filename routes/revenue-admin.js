@@ -61,8 +61,8 @@ router.post('/create-invoice', authenticateToken, async (req, res) => {
       authorization_url: authorizationUrl,
     });
   } catch (error) {
-    console.error('Create invoice error:', error);
-    res.status(500).json({ error: 'Failed to create invoice' });
+    if (!error.status) console.error('Create invoice error:', error);
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Failed to create invoice' });
   }
 });
 
@@ -80,27 +80,46 @@ router.post('/invoices/verify', authenticateToken, async (req, res) => {
   }
 });
 
+// The price list (admin "Prices" page). Every amount comes from here.
+router.get('/prices', requireAdmin, async (req, res) => {
+  try {
+    res.json({ prices: await RevenueService.getPriceList() });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load prices' });
+  }
+});
+
+router.put('/prices/:key', requireAdmin, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const before = await Database.selectOne('system_settings', 'setting_value', 'setting_key = ?', [key]).catch(() => null);
+    const result = await RevenueService.setFee(key, req.body?.value, req.user.id);
+    await Database.logAudit(req.user.id, 'PRICE_UPDATED', 'system_settings', key,
+      { value: before?.setting_value ?? null }, { value: result.value }, req.ip).catch(() => {});
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Failed to save the price' });
+  }
+});
+
+// Older paths, kept for the admin dashboard
 router.get('/fees', requireAdmin, async (req, res) => {
   try {
-    const fees = await RevenueService.getAllFees();
-    res.json({ fees });
+    res.json({ fees: await RevenueService.getAllFees() });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch fee settings' });
   }
 });
 
+// The amount a signed-in person will pay for something (null = not set yet)
 router.get('/fees/:key', authenticateToken, async (req, res) => {
   try {
     const { key } = req.params;
-    const validKeys = ['nin_verification_fee', 'report_verification_fee', 'device_check_free_tier',
-      'device_check_fee', 'business_verification_fee', 'marketplace_commission_percent', 'device_recovery_fee',
-      'business_onboarding_fee', 'business_onboarding_commission_percent', 'free_reports_per_device',
-      'nin_verification_per_device_fee', 'device_release_fee'];
-    if (!validKeys.includes(key)) {
+    if (!RevenueService.PRICE_LIST.some((p) => p.key === key)) {
       return res.status(400).json({ error: 'Invalid fee key' });
     }
-    const fee = await RevenueService.getFee(key);
-    res.json({ key, amount: fee, currency: 'NGN' });
+    const amount = await RevenueService.getFee(key).catch((e) => { if (e.priceNotSet) return null; throw e; });
+    res.json({ key, amount, currency: 'NGN', set: amount !== null });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch fee' });
   }
@@ -108,29 +127,12 @@ router.get('/fees/:key', authenticateToken, async (req, res) => {
 
 router.put('/fees/:key', requireAdmin, async (req, res) => {
   try {
-    const { key } = req.params;
-    const { value } = req.body;
-    const validKeys = ['nin_verification_fee', 'report_verification_fee', 'device_check_free_tier',
-      'device_check_fee', 'business_verification_fee', 'marketplace_commission_percent', 'device_recovery_fee',
-      'business_onboarding_fee', 'business_onboarding_commission_percent', 'free_reports_per_device',
-      'nin_verification_per_device_fee', 'device_release_fee'];
-
-    if (!validKeys.includes(key)) {
-      return res.status(400).json({ error: 'Invalid fee key' });
-    }
-
-    const numericValue = parseFloat(value);
-    if (isNaN(numericValue) || numericValue < 0) {
-      return res.status(400).json({ error: 'Value must be a positive number' });
-    }
-
-    const result = await RevenueService.setFee(key, numericValue, req.user.id);
-    await Database.logAudit(req.user.id, 'FEE_UPDATED', 'system_settings', key,
-      null, { key, value: numericValue }, req.ip);
-
+    const result = await RevenueService.setFee(req.params.key, req.body?.value, req.user.id);
+    await Database.logAudit(req.user.id, 'PRICE_UPDATED', 'system_settings', req.params.key,
+      null, { value: result.value }, req.ip).catch(() => {});
     res.json({ success: true, ...result });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update fee' });
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Failed to update fee' });
   }
 });
 
@@ -200,14 +202,14 @@ router.get('/transactions', requireAdmin, async (req, res) => {
       SELECT t.*, u.name as user_name, u.email as user_email
       FROM transactions t
       LEFT JOIN users u ON t.user_id = u.id
-      WHERE t.type IN ('device_check_fee', 'report_verification_fee', 'marketplace_commission', 'nin_verification_fee', 'device_recovery_fee')
+      WHERE t.type IN ('device_check_fee','report_verification_fee','business_verification_fee','device_release_fee','business_onboarding_fee','marketplace_commission','service_fee','nin_verification_fee','device_recovery_fee')
       ORDER BY t.created_at DESC
       LIMIT ? OFFSET ?
     `, [limit, offset]);
 
     const [{ total }] = await Database.query(
       `SELECT COUNT(*) as total FROM transactions
-       WHERE type IN ('device_check_fee','report_verification_fee','marketplace_commission','nin_verification_fee','device_recovery_fee')`
+       WHERE type IN ('device_check_fee','report_verification_fee','business_verification_fee','device_release_fee','business_onboarding_fee','marketplace_commission','service_fee','nin_verification_fee','device_recovery_fee')`
     );
 
     res.json({
@@ -270,7 +272,7 @@ router.get('/summary', requireAdmin, async (req, res) => {
         COUNT(*) as count,
         SUM(amount) as total_amount
       FROM transactions
-      WHERE type IN ('device_check_fee','report_verification_fee','marketplace_commission','nin_verification_fee','device_recovery_fee')
+      WHERE type IN ('device_check_fee','report_verification_fee','business_verification_fee','device_release_fee','business_onboarding_fee','marketplace_commission','service_fee','nin_verification_fee','device_recovery_fee')
       AND status = 'completed'
       GROUP BY type
     `);

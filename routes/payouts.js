@@ -2,51 +2,42 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const Database = require('../config');
-const PaystackService = require('../services/PaystackService');
 const PaymentService = require('../services/PaymentService');
 
-// Used when Paystack cannot be reached, so the payout form still works.
-// (Codes are Paystack's bank codes.)
-const FALLBACK_BANKS = [
-  ['Access Bank', '044'], ['Citibank Nigeria', '023'], ['Ecobank Nigeria', '050'], ['Fidelity Bank', '070'],
-  ['First Bank of Nigeria', '011'], ['First City Monument Bank', '214'], ['Globus Bank', '00103'], ['Guaranty Trust Bank', '058'],
-  ['Heritage Bank', '030'], ['Jaiz Bank', '301'], ['Keystone Bank', '082'], ['Kuda Bank', '50211'], ['Moniepoint MFB', '50515'],
-  ['OPay', '999992'], ['PalmPay', '999991'], ['Parallex Bank', '104'], ['Polaris Bank', '076'], ['Providus Bank', '101'],
-  ['Stanbic IBTC Bank', '221'], ['Standard Chartered Bank', '068'], ['Sterling Bank', '232'], ['SunTrust Bank', '100'],
-  ['Titan Trust Bank', '102'], ['Union Bank of Nigeria', '032'], ['United Bank For Africa', '033'], ['Unity Bank', '215'],
-  ['Wema Bank', '035'], ['Zenith Bank', '057'],
-].map(([name, code], i) => ({ id: i + 1, name, code, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), currency: 'NGN', active: true }));
+// Seller payout accounts are checked and paid through the payment provider
+// switched on for marketplace payments (Admin > Modules & payments), not a
+// fixed one: each provider has its own bank list and bank codes.
+const Escrow = require('../services/escrow');
+const payoutProvider = () => Escrow.current();
+const fail = (res, err, what) => {
+  if (!err.status) console.error(what, err.response?.data || err.message);
+  res.status(err.status || 502).json({ error: err.status ? err.message : `${what}. Please try again shortly.` });
+};
 
-// GET /api/payments/banks — list Nigerian banks from Paystack
+// GET /api/payments/banks — banks from the payout provider
 router.get('/banks', authenticateToken, async (req, res) => {
   try {
-    const result = await PaystackService.listBanks();
-    if (!Array.isArray(result?.data) || !result.data.length) throw new Error('empty bank list');
-    res.json({ data: result.data });
-  } catch (err) {
-    console.warn('List banks: Paystack unavailable, using the built-in list:', err.message);
-    res.json({ data: FALLBACK_BANKS, fallback: true });
-  }
+    const p = await payoutProvider();
+    res.json({ data: await p.listBanks(), provider: p.name });
+  } catch (err) { fail(res, err, 'The bank list is unavailable'); }
 });
 
-// POST /api/payments/resolve-account — resolve account name from number + bank code
+// POST /api/payments/resolve-account — the account holder's name
 router.post('/resolve-account', authenticateToken, async (req, res) => {
   try {
-    const { accountNumber, bankCode } = req.body;
-    if (!accountNumber || !bankCode) return res.status(400).json({ error: 'Account number and bank code required' });
-    const result = await PaystackService.resolveAccountNumber(accountNumber, bankCode);
-    res.json({ accountName: result.data.account_name });
-  } catch (err) {
-    console.error('Resolve account error:', err);
-    res.status(400).json({ error: err.response?.data?.message || 'Failed to resolve account' });
-  }
+    const { accountNumber, bankCode } = req.body || {};
+    if (!/^\d{10}$/.test(String(accountNumber || '')) || !bankCode) return res.status(400).json({ error: 'Enter a 10-digit account number and choose the bank' });
+    const p = await payoutProvider();
+    res.json({ ...(await p.resolveAccount(String(accountNumber), String(bankCode))), provider: p.name });
+  } catch (err) { fail(res, err, 'We could not check that account'); }
 });
 
-// GET /api/payments/seller-bank-account — get seller's saved bank account
+// GET /api/payments/seller-bank-account — the seller's saved account
 router.get('/seller-bank-account', authenticateToken, async (req, res) => {
   try {
     const account = await Database.selectOne('seller_bank_accounts', '*', 'user_id = ?', [req.user.id]);
     if (!account) return res.json({ data: null });
+    const current = await Escrow.currentName().catch(() => null);
     res.json({
       data: {
         id: account.id,
@@ -55,6 +46,10 @@ router.get('/seller-bank-account', authenticateToken, async (req, res) => {
         accountNumber: account.account_number,
         accountName: account.account_name,
         isVerified: !!account.is_verified,
+        provider: account.provider || null,
+        // Saved with a different provider: bank codes differ, so the
+        // seller must choose their bank again before the next payout
+        needsUpdate: !!current && account.provider !== current,
       },
     });
   } catch (err) {
@@ -63,54 +58,34 @@ router.get('/seller-bank-account', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/payments/seller-bank-account — save/update seller's bank account
+// POST /api/payments/seller-bank-account — save the seller's account. The
+// name is looked up with the provider here; the name the browser sends is
+// not trusted.
 router.post('/seller-bank-account', authenticateToken, async (req, res) => {
   try {
-    const { bankCode, bankName, accountNumber, accountName } = req.body;
-    if (!bankCode || !bankName || !accountNumber || !accountName) {
-      return res.status(400).json({ error: 'All bank fields required' });
+    const { bankCode, bankName, accountNumber } = req.body || {};
+    if (!bankCode || !bankName || !/^\d{10}$/.test(String(accountNumber || ''))) {
+      return res.status(400).json({ error: 'Choose the bank and enter a 10-digit account number' });
     }
-
-    // Create transfer recipient on Paystack
-    const recipient = await PaystackService.createTransferRecipient({
-      name: accountName,
-      accountNumber,
-      bankCode,
-    });
-
-    if (!recipient.status) throw new Error(recipient.message || 'Failed to create recipient');
-
+    const p = await payoutProvider();
+    const { accountName } = await p.resolveAccount(String(accountNumber), String(bankCode));
+    const extra = await p.prepareRecipient({ accountName, accountNumber: String(accountNumber), bankCode: String(bankCode) });
+    const row = {
+      bank_name: String(bankName).slice(0, 255),
+      bank_code: String(bankCode).slice(0, 10),
+      account_number: String(accountNumber),
+      account_name: accountName,
+      recipient_code: extra.recipient_code || null,
+      provider: p.name,
+      is_verified: 1,
+    };
     const existing = await Database.selectOne('seller_bank_accounts', 'id', 'user_id = ?', [req.user.id]);
-
-    if (existing) {
-      await Database.update('seller_bank_accounts', {
-        bank_name: bankName,
-        bank_code: bankCode,
-        account_number: accountNumber,
-        account_name: accountName,
-        recipient_code: recipient.data.recipient_code,
-        is_verified: 1,
-        updated_at: new Date(),
-      }, 'user_id = ?', [req.user.id]);
-    } else {
-      await Database.insert('seller_bank_accounts', {
-        id: Database.generateUUID(),
-        user_id: req.user.id,
-        bank_name: bankName,
-        bank_code: bankCode,
-        account_number: accountNumber,
-        account_name: accountName,
-        recipient_code: recipient.data.recipient_code,
-        is_verified: 1,
-        created_at: new Date(),
-      });
-    }
-
-    res.json({ success: true, message: 'Bank account saved and verified for payouts' });
-  } catch (err) {
-    console.error('Save seller bank account error:', err);
-    res.status(400).json({ error: err.response?.data?.message || err.message });
-  }
+    if (existing) await Database.update('seller_bank_accounts', { ...row, updated_at: new Date() }, 'user_id = ?', [req.user.id]);
+    else await Database.insert('seller_bank_accounts', { id: Database.generateUUID(), user_id: req.user.id, ...row, created_at: new Date() });
+    await Database.logAudit(req.user.id, 'PAYOUT_ACCOUNT_SAVED', 'seller_bank_accounts', req.user.id, null,
+      { bank: row.bank_name, last4: row.account_number.slice(-4), provider: p.name }, req.ip).catch(() => {});
+    res.json({ success: true, accountName, message: 'Bank account saved and verified for payouts' });
+  } catch (err) { fail(res, err, 'We could not save the account'); }
 });
 
 // DELETE /api/payments/seller-bank-account — remove seller's bank account

@@ -418,6 +418,7 @@ router.post('/', async (req, res) => {
 
     res.status(201).json(report);
   } catch (error) {
+    if (error.priceNotSet) return res.status(503).json({ error: error.message });
     console.error('Error creating report:', error);
     res.status(500).json({ error: 'Internal server error' });
   }

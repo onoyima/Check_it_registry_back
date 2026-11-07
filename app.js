@@ -94,18 +94,44 @@ app.use(compression());
 // CORS: allow local dev ports and custom headers for device check context
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 
+function isProductionOrigin(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' &&
+      ['proveownership.com', 'www.proveownership.com'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function getCorsOrigin() {
   // Always an explicit list (credentials are allowed, so never "any origin")
-  const allowed = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
-    .split(',')
-    .map(s => s.trim().replace(/\/$/, ''))
-    .filter(Boolean);
+  const allowed = new Set(
+    (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
+      .split(',')
+      .map(s => s.trim().replace(/\/$/, ''))
+      .filter(Boolean)
+  );
+  allowed.add('https://proveownership.com');
+  allowed.add('https://www.proveownership.com');
   if (isDev) {
-    allowed.push('http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4173');
+    allowed.add('http://localhost:5173');
+    allowed.add('http://127.0.0.1:5173');
+    allowed.add('http://localhost:4173');
   }
   return (origin, callback) => {
-    if (!origin || allowed.includes(origin)) {
-      callback(null, true);
+    if (!origin) return callback(null, true);
+
+    // Some reverse proxies forward duplicate Origin headers as a
+    // comma-separated value. Collapse identical values before checking.
+    const origins = [...new Set(origin.split(',').map(s => s.trim()).filter(Boolean))];
+    if (origins.length !== 1) {
+      return callback(new Error('Not allowed by CORS'));
+    }
+
+    const requestOrigin = origins[0];
+    if (allowed.has(requestOrigin) || isProductionOrigin(requestOrigin)) {
+      callback(null, requestOrigin);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
@@ -243,7 +269,6 @@ app.use('/api/admin-dashboard', require('./routes/admin-dashboard'));
 
 // Enhanced security and recovery routes
 app.use('/api/device-transfer', require('./routes/device-transfer'));
-app.use('/api/recovery-services', require('./routes/recovery-services'));
 // Switched-off modules answer 503 (admins can still use them)
 app.use('/api/modules', require('./routes/modules'));
 const { requireModule } = require('./services/ModuleService');

@@ -88,10 +88,10 @@ class CACVerificationService {
   static async getCommissionSettings() {
     const settings = {};
     const keys = ['marketplace_commission_percent', 'business_verification_fee'];
+    const RevenueService = require('./RevenueService');
     for (const key of keys) {
-      const row = await Database.selectOne('system_settings', 'setting_value',
-        'setting_key = ?', [key]);
-      settings[key] = row ? parseFloat(row.setting_value) : (key.includes('percent') ? 5.00 : 2500);
+      // null = not set by the admin yet
+      settings[key] = await RevenueService.getFee(key).catch(() => null);
     }
     return settings;
   }

@@ -1,0 +1,87 @@
+name: Deploy ProveOwnership Backend
+
+on:
+  push:
+    branches:
+      - production
+  workflow_dispatch:
+
+concurrency:
+  group: backend-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test -- --runInBand --forceExit
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy backend
+        run: |
+          ssh -i ~/.ssh/deploy_key "prove-deploy@${{ secrets.VPS_HOST }}" \
+            "mkdir -p /home/prove-deploy/apps/proveownership-backend"
+          rsync -az --delete \
+            --exclude='.env' \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='uploads' \
+            --exclude='logs' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ "prove-deploy@${{ secrets.VPS_HOST }}:/home/prove-deploy/apps/proveownership-backend/"
+
+      - name: Check server .env
+        run: |
+          ssh -i ~/.ssh/deploy_key "prove-deploy@${{ secrets.VPS_HOST }}" \
+            "test -f /home/prove-deploy/apps/proveownership-backend/.env && echo 'Server .env found (left untouched)' || (echo 'ERROR: server .env is missing'; exit 1)"
+
+      - name: Install production dependencies and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key "prove-deploy@${{ secrets.VPS_HOST }}" \
+            "cd /home/prove-deploy/apps/proveownership-backend && npm ci --omit=dev && (pm2 describe proveownership-api > /dev/null 2>&1 && pm2 restart proveownership-api --update-env || pm2 start app.js --name proveownership-api) && pm2 save"
+
+      - name: Enable PM2 on boot (best effort)
+        run: |
+          ssh -i ~/.ssh/deploy_key "prove-deploy@${{ secrets.VPS_HOST }}" \
+            'sudo -n env PATH="$PATH:/usr/local/bin:/usr/bin" pm2 startup systemd -u prove-deploy --hp /home/prove-deploy >/dev/null 2>&1 || echo "pm2 startup skipped (needs passwordless sudo)"; pm2 save'
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/deploy_key "prove-deploy@${{ secrets.VPS_HOST }}" bash -s <<'EOF'
+          set -e
+          cd /home/prove-deploy/apps/proveownership-backend
+          PORT=$(grep -E '^PORT=' .env | tail -n1 | cut -d= -f2 | tr -d '[:space:]' | cut -d'#' -f1)
+          PORT=${PORT:-3006}
+          URL="http://127.0.0.1:${PORT}/health"
+          for i in $(seq 1 45); do
+            if curl -fsS "$URL" >/dev/null 2>&1 || wget -q -O /dev/null "$URL" 2>/dev/null; then
+              echo "API health check passed on port ${PORT}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API health check FAILED on port ${PORT}"
+          pm2 logs proveownership-api --lines 50 --nostream || true
+          exit 1
+          EOF

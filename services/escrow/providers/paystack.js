@@ -21,9 +21,29 @@ module.exports = {
     return { paid: ok, amount: ok ? Number(r.data.amount) / 100 : 0, currency: r.data?.currency || 'NGN' };
   },
 
+  async listBanks() {
+    const r = await PaystackService.listBanks();
+    if (!Array.isArray(r?.data) || !r.data.length) throw new Error('Paystack returned no banks');
+    return r.data.map((b) => ({ name: b.name, code: String(b.code) }));
+  },
+
+  async resolveAccount(accountNumber, bankCode) {
+    const r = await PaystackService.resolveAccountNumber(accountNumber, bankCode)
+      .catch((e) => { throw Object.assign(new Error(e.response?.data?.message || 'We could not find that account'), { status: 400 }); });
+    if (!r?.data?.account_name) throw Object.assign(new Error('We could not find that account'), { status: 400 });
+    return { accountName: r.data.account_name };
+  },
+
+  // Paystack pays to a saved "transfer recipient"
+  async prepareRecipient({ accountName, accountNumber, bankCode }) {
+    const r = await PaystackService.createTransferRecipient({ name: accountName, accountNumber, bankCode });
+    if (!r?.status) throw new Error(r?.message || 'Paystack could not save the account');
+    return { recipient_code: r.data.recipient_code };
+  },
+
   async release({ sellerId, amount, reference, reason }) {
-    const bank = await Database.selectOne('seller_bank_accounts', '*', 'user_id = ? AND is_verified = 1', [sellerId]);
-    if (!bank) throw new Error('Seller has no verified bank account for payout');
+    const bank = await Database.selectOne('seller_bank_accounts', '*', "user_id = ? AND is_verified = 1 AND provider = 'paystack'", [sellerId]);
+    if (!bank) throw new Error('The seller needs to confirm their bank account for payouts');
     if (!bank.recipient_code) throw new Error('Seller recipient code not found');
     const r = await PaystackService.initiateTransfer({ amount, recipientCode: bank.recipient_code, reference, reason });
     if (!r?.status) throw new Error('Payout failed: ' + (r?.message || 'unknown error'));

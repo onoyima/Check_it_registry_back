@@ -6,6 +6,7 @@ const notifier = require('../services/EnhancedNotificationService');
 const RevenueService = require('../services/RevenueService');
 const FraudDetectionService = require('../services/FraudDetectionService');
 const DeviceCheckService = require('../services/DeviceCheckService');
+const CheckCapture = require('../services/CheckCaptureService');
 const { getDisplayName, nameSelectColumns } = require('../utils/user-helpers');
 
 const router = express.Router();
@@ -50,235 +51,36 @@ router.get('/stats', noRestrictions, async (req, res) => {
   }
 });
 
-// GET /api/public-check?imei=xxx or ?serial=xxx
-router.get('/', authenticateToken, async (req, res) => {
+// GET /api/public-check - the old way to check (headers for location and a
+// "MAC address"). Closed: every check goes through POST /enhanced, which
+// takes the checker's photo, location and the price rules.
+router.get('/', authenticateToken, (req, res) => {
+  res.status(410).json({ error: 'Use the Check an item page to check an item.' });
+});
+
+// How many free checks of other people's items this person has left
+router.get('/allowance', authenticateToken, async (req, res) => {
   try {
-    const { imei, serial } = req.query;
-
-    if (!imei && !serial) {
-      return res.status(400).json({ 
-        error: 'IMEI or serial number required' 
-      });
-    }
-
-    // Checker identity (required: only registered users can check)
-    const checkerUserId = req.user.id;
-    const checker = req.user;
-
-    // Require network and location context
-    const xff = req.headers['x-forwarded-for'];
-    const clientIP = (Array.isArray(xff) ? xff[0] : (xff || '')).split(',')[0].trim() || req.ip || req.connection.remoteAddress || req.socket?.remoteAddress || 'unknown';
-    const userAgent = req.get('User-Agent') || '';
-    const macHeader = req.headers['x-mac-address'] || req.headers['x-client-mac'];
-    const macAddress = macHeader ? String(macHeader) : null;
-    const locLat = req.headers['x-location-lat'];
-    const locLon = req.headers['x-location-lon'];
-    const locAcc = req.headers['x-location-accuracy'];
-    const locationLatitude = locLat !== undefined ? Number(locLat) : null;
-    const locationLongitude = locLon !== undefined ? Number(locLon) : null;
-    const locationAccuracy = locAcc !== undefined ? Number(locAcc) : null;
-
-    if (!macAddress) {
-      return res.status(400).json({
-        error: 'MAC address required. Provide in header x-mac-address or x-client-mac.'
-      });
-    }
-
-    if (locationLatitude === null || locationLongitude === null || locationAccuracy === null) {
-      return res.status(400).json({
-        error: 'Live location required. Provide x-location-lat, x-location-lon, x-location-accuracy headers.'
-      });
-    }
-
-    if (Number.isNaN(locationLatitude) || Number.isNaN(locationLongitude) || Number.isNaN(locationAccuracy)) {
-      return res.status(400).json({
-        error: 'Invalid location values. lat, lon, accuracy must be numbers.'
-      });
-    }
-
-    if (Math.abs(locationLatitude) > 90 || Math.abs(locationLongitude) > 180 || locationAccuracy < 0) {
-      return res.status(400).json({
-        error: 'Invalid location bounds. lat in [-90,90], lon in [-180,180], accuracy >= 0.'
-      });
-    }
-
-    // Search for device with owner KYC info
-    let device;
-    const queryCols = 'd.id, d.user_id, d.imei, d.serial, d.brand, d.model, d.status, d.ownership_level, u.kyc_status, u.is_verified, u.caution_flag';
-    // Adjust join to be LEFT JOIN in case user key is missing (though should be enforced)
-    const joinClause = 'LEFT JOIN users u ON d.user_id = u.id';
-
-    if (imei) {
-      const results = await Database.query(
-        `SELECT ${queryCols} FROM devices d ${joinClause} WHERE d.imei = ?`,
-        [imei]
-      );
-      device = results[0];
-    } else if (serial) {
-      const results = await Database.query(
-        `SELECT ${queryCols} FROM devices d ${joinClause} WHERE d.serial = ?`,
-        [serial]
-      );
-      device = results[0];
-    }
-
-    let result;
-
-    if (!device) {
-      result = {
-        status: 'not_found',
-        message: 'Device not found in registry'
-      };
-    } else {
-      // Base result
-      result = {
-        status: device.status,
-        ownership_level: device.ownership_level || 'registered',
-        device_details: {
-          brand: device.brand,
-          model: device.model
-        },
-        owner_kyc: {
-          status: device.kyc_status || 'unverified',
-          is_verified: !!device.is_verified,
-          caution_flag: !!device.caution_flag
-        }
-      };
-
-      if (device.status === 'released') {
-        result = {
-          status: 'released',
-          message: 'This device was released by its previous owner and is available for registration by a new owner.',
-          device_details: {
-            brand: device.brand,
-            model: device.model
-          }
-        };
-      } else if (device.status === 'stolen' || device.status === 'lost') {
-        // Get active report
-        const report = await Database.selectOne(
-          'reports',
-          'case_id, report_type, occurred_at',
-          'device_id = ? AND status = ?',
-          [device.id, 'open'],
-          'created_at DESC'
-        );
-
-        result.message = `This device has been reported as ${device.status}`;
-        result.case_id = report?.case_id;
-        result.report_type = report?.report_type;
-        result.occurred_at = report?.occurred_at;
-        result.recovery_instructions = 'Please contact local law enforcement immediately. Do not attempt to confront or contact the seller.';
-      } else if (device.status === 'unverified') {
-        result.message = 'Device is registered but pending verification';
-      } else {
-        result.message = 'Device is registered and has no active reports';
-      }
-
-      // Add Caution Message if owner is flagged
-      if (device.caution_flag) {
-        result.warning = '⚠️ The owner of this device is flagged. Deal with caution.';
-      }
-    }
-
-    // Log the check to legacy table
-    await Database.insert('imei_checks', {
-      id: Database.generateUUID(),
-      query: imei || serial,
-      ip_address: clientIP,
-      user_agent: userAgent,
-      result: JSON.stringify(result),
-      created_at: new Date()
-    });
-
-    // Also log to existing device_check_logs table for enhanced tracking
-    const checkResultEnum = !device
-      ? 'unknown'
-      : (device.status === 'stolen' || device.status === 'lost' ? 'stolen'
-        : (device.status === 'verified' ? 'legitimate' : 'unknown'));
-
-    const checkId = device ? Database.generateUUID() : null;
-    if (checkId) {
-      await Database.insert('device_check_logs', {
-        id: checkId,
-        device_id: device.id,
-        checker_user_id: checkerUserId,
-        check_type: 'public_check',
-        ip_address: clientIP,
-        mac_address: macAddress,
-        user_agent: userAgent,
-        latitude: locationLatitude,
-        longitude: locationLongitude,
-        location_accuracy: locationAccuracy,
-        device_fingerprint: JSON.stringify({}),
-        risk_score: 0,
-        suspicious_flags: JSON.stringify([]),
-        check_result: checkResultEnum,
-        warnings_shown: JSON.stringify([]),
-        created_at: new Date()
-      });
-    }
-
-    // Alerts: notify owner and admins/LEA if reported device is checked
-    if (device && (device.status === 'stolen' || device.status === 'lost')) {
-      try {
-        const subject = `ALERT: Reported device checked (${device.brand} ${device.model})`;
-        const html = `
-          <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
-            <h2 style="color:#B91C1C;">Reported Device Check Detected</h2>
-            <p>A device flagged as <strong>${device.status}</strong> was checked via the public API.</p>
-            <ul>
-              <li><strong>Device:</strong> ${escapeHtml(device.brand)} ${escapeHtml(device.model)}</li>
-              <li><strong>Identifier:</strong> ${imei || serial}</li>
-              <li><strong>IP:</strong> ${clientIP}</li>
-              <li><strong>MAC:</strong> ${macAddress || 'Unknown'}</li>
-              <li><strong>User-Agent:</strong> ${userAgent}</li>
-              <li><strong>Checker:</strong> ${checker ? `${getDisplayName(checker)} (${checker.email || checker.id})` : 'Anonymous'}</li>
-              <li><strong>Location:</strong> ${locationLatitude && locationLongitude ? `${locationLatitude}, ${locationLongitude} (±${locationAccuracy || 'n/a'}m)` : 'Unknown'}</li>
-              <li><strong>Check ID:</strong> ${checkId}</li>
-            </ul>
-            <p>Action may be required. Review related report and consider LEA notification.</p>
-          </div>
-        `;
-
-        // Notify admin (if configured)
-        if (process.env.ADMIN_EMAIL) {
-          await notifier.sendEmail(process.env.ADMIN_EMAIL, subject, html);
-        }
-
-        // Notify device owner
-        if (device.user_id) {
-          const owner = await Database.selectOne('users', 'email, name, first_name, middle_name, last_name, phone', 'id = ?', [device.user_id]);
-          if (owner?.email) {
-            await notifier.sendEmail(owner.email, `Device Check Alert - ${device.brand} ${device.model}`, html);
-          }
-        }
-
-        // Notify assigned LEA if there is an open report
-        const activeReport = await Database.query(
-          `SELECT r.case_id, r.assigned_lea_id FROM reports r 
-           WHERE r.device_id = ? AND r.status IN ('open','under_review') 
-           ORDER BY r.created_at DESC LIMIT 1`, [device.id]
-        );
-
-        const ar = activeReport && activeReport[0];
-        if (ar && ar.assigned_lea_id) {
-          const lea = await Database.selectOne('law_enforcement_agencies', 'agency_name, contact_email', 'id = ?', [ar.assigned_lea_id]);
-          if (lea?.contact_email) {
-            await notifier.sendEmail(lea.contact_email, subject + ` (Case ${ar.case_id})`, html);
-          }
-        }
-
-        // No alert_sent column in device_check_logs; skipping update
-      } catch (notifyErr) {
-        console.error('Error sending alerts for reported device check:', notifyErr);
-      }
-    }
-
-    res.json(result);
+    const a = await CheckCapture.allowance(req.user.id);
+    const fee = await RevenueService.getFee('device_check_fee').catch(() => null);
+    res.json({ ...a, fee });
   } catch (error) {
-    console.error('Error in public check:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (error.priceNotSet) return res.json({ freeLimit: null, used: null, remaining: 0, fee: null, notSet: true });
+    console.error('Check allowance error:', error);
+    res.status(500).json({ error: 'Could not load your free checks' });
+  }
+});
+
+// GET /api/public-check/certificate/:code - a buyer confirms the check
+// certificate a seller shows them. Free, for signed-in people.
+router.get('/certificate/:code', authenticateToken, async (req, res) => {
+  try {
+    const cert = await CheckCapture.readCertificate(req.params.code, req.user, req);
+    if (!cert) return res.status(404).json({ error: "We couldn't find a certificate with that code. Check it and try again." });
+    res.json({ success: true, certificate: cert });
+  } catch (error) {
+    console.error('Certificate lookup error:', error);
+    res.status(500).json({ error: 'Could not check the certificate' });
   }
 });
 
@@ -290,51 +92,47 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
       checkerLocation,
       deviceFingerprint,
       networkInfo,
+      selfie,
       checkReason = 'public_check'
     } = req.body;
 
     // Validate required data
     if (!deviceIdentifier) {
-      return res.status(400).json({ 
-        error: 'Device identifier is required' 
-      });
+      return res.status(400).json({ error: 'Device identifier is required' });
     }
-
-    if (!checkerLocation || !checkerLocation.latitude || !checkerLocation.longitude) {
-      return res.status(400).json({ 
-        error: 'Location data is required for device checks' 
-      });
+    if (!checkerLocation || checkerLocation.latitude == null || checkerLocation.longitude == null) {
+      return res.status(400).json({ error: 'Location data is required for device checks' });
     }
-
     if (!deviceFingerprint) {
-      return res.status(400).json({ 
-        error: 'Device fingerprint is required' 
-      });
+      return res.status(400).json({ error: 'Device fingerprint is required' });
+    }
+    // A photo of the person checking, taken with their camera just now
+    const photo = CheckCapture.parseSelfie(selfie);
+    if (!photo) {
+      return res.status(400).json({ error: 'A photo of you is needed to check an item. Allow the camera and take the photo.' });
     }
 
-    // Require network info: IP and MAC
-    const ipValue = networkInfo && (networkInfo.ip || networkInfo.ipAddress);
-    const macValue = networkInfo && (networkInfo.mac || networkInfo.macAddress);
-    if (!ipValue || !macValue) {
-      return res.status(400).json({
-        error: 'Network info required: provide IP and MAC in networkInfo.ip/.ipAddress and networkInfo.mac/.macAddress'
-      });
-    }
-    
-    // Checker is the logged-in user
     const checkerUserId = req.user.id;
+    // The address this request came from, as our server sees it (behind the
+    // VPS's web server this needs TRUST_PROXY set, see .env.example). The
+    // address the browser claims is kept separately, for comparison only.
+    const serverIp = CheckCapture.clientIp(req);
+    const reportedIp = CheckCapture.cleanIp(networkInfo?.ip || networkInfo?.ipAddress);
+    const browserDeviceId = CheckCapture.browserDeviceId(req);
 
-    /* Device check fee logic for authenticated users */
-    if (checkerUserId) {
-      // Fraud scoring must never stop a genuine check from answering
-      await FraudDetectionService.checkAndFlag(checkerUserId, 'DEVICE_CHECK', {
-        ipAddress: networkInfo?.ip || ipValue,
-        macAddress: macValue,
-        deviceId: null
-      }).catch((e) => console.error('Device check: fraud scoring skipped:', e.message));
+    // Fraud scoring must never stop a genuine check from answering
+    await FraudDetectionService.checkAndFlag(checkerUserId, 'DEVICE_CHECK', {
+      ipAddress: serverIp, macAddress: null, deviceId: browserDeviceId,
+    }).catch((e) => console.error('Device check: fraud scoring skipped:', e.message));
 
-      const onFreeTier = await RevenueService.deductFreeCheckCredit(checkerUserId);
-      if (!onFreeTier) {
+    // What it costs: your own item is free; other people's items are free
+    // for the first few checks (admin setting), then the admin's price
+    const target = await DeviceCheckService.findDeviceByIdentifier(String(deviceIdentifier).trim()).catch(() => null);
+    const isOwnItem = !!(target && target.user_id === checkerUserId);
+    let feePaid = null;
+    if (!isOwnItem) {
+      const allowance = await CheckCapture.allowance(checkerUserId);
+      if (allowance.remaining <= 0) {
         const fee = await RevenueService.getFee('device_check_fee');
         if (fee > 0) {
           const { pay_by_pass } = req.body;
@@ -343,7 +141,7 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
               requiresPayment: true,
               amount: fee,
               purpose: 'Device Check Fee',
-              message: `Free check limit reached. Payment of ₦${fee} required for device checks.`
+              message: `You've used your ${allowance.freeLimit} free checks of other people's items. This check costs ₦${fee.toLocaleString()}.`
             });
           }
           const paidInvoice = await RevenueService.redeemPaidInvoice(checkerUserId, pay_by_pass, ['device_check_fee']);
@@ -355,9 +153,13 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
             });
           }
           await RevenueService.chargeForCheck(checkerUserId, fee, paidInvoice.reference);
+          feePaid = fee;
         }
       }
     }
+
+    // Store the photo (private: only the checker, admins and police see it)
+    const selfieUrl = await CheckCapture.saveSelfie(photo, checkerUserId);
 
     // Perform enhanced device check
     const checkResult = await DeviceCheckService.performDeviceCheck({
@@ -366,8 +168,17 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
       deviceFingerprint,
       networkInfo,
       checkReason,
-      checkerUserId
+      checkerUserId,
+      capture: { searchedIdentifier: String(deviceIdentifier).trim().slice(0, 64), isOwnItem, selfieUrl, serverIp, reportedIp, browserDeviceId, feePaid },
     });
+
+    // An owner checking their own item gets a certificate to show a buyer
+    if (isOwnItem && checkResult?.checkId) {
+      checkResult.certificate = await CheckCapture.issueCertificate(checkResult.checkId).catch((e) => {
+        console.error('Certificate not issued:', e.message); return null;
+      });
+    }
+    checkResult.ownItem = isOwnItem;
 
     // If reported device, send alerts to admin, owner, and LEA
     try {
@@ -394,15 +205,16 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
         const html = `
           <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
             <h2 style="color:#B91C1C;">Reported Device Check Detected</h2>
-            <p>A device flagged as <strong>${checkResult.deviceStatus}</strong> was checked via the enhanced public API.</p>
+            <p>An item reported <strong>${escapeHtml(checkResult.deviceStatus)}</strong> was just checked on Prove Ownership.</p>
             <ul>
-              <li><strong>Device:</strong> ${checkResult.deviceDetails?.brand || device?.brand || 'Unknown'} ${checkResult.deviceDetails?.model || device?.model || ''}</li>
-              <li><strong>Identifier:</strong> ${device?.imei || device?.serial || deviceIdentifier}</li>
-              <li><strong>IP:</strong> ${networkInfo?.ip || networkInfo?.ipAddress || 'Unknown'}</li>
-              <li><strong>MAC:</strong> ${networkInfo?.mac || networkInfo?.macAddress || deviceFingerprint?.macAddress || 'Unknown'}</li>
-              <li><strong>User-Agent:</strong> ${deviceFingerprint?.userAgent || 'Unknown'}</li>
-              <li><strong>Checker:</strong> ${checker ? `${getDisplayName(checker)} (${checker.email || checker.phone || checker.id})` : 'Anonymous'}</li>
-              <li><strong>Location:</strong> ${checkerLocation?.latitude && checkerLocation?.longitude ? `${checkerLocation.latitude}, ${checkerLocation.longitude} (±${checkerLocation.accuracy || 'n/a'}m)` : 'Unknown'}</li>
+              <li><strong>Device:</strong> ${escapeHtml(checkResult.deviceDetails?.brand || device?.brand || 'Unknown')} ${escapeHtml(checkResult.deviceDetails?.model || device?.model || '')}</li>
+              <li><strong>Identifier:</strong> ${escapeHtml(String(device?.imei || device?.serial || deviceIdentifier))}</li>
+              <li><strong>IP address:</strong> ${escapeHtml(serverIp || 'Unknown')}</li>
+              <li><strong>Browser ID:</strong> ${escapeHtml(browserDeviceId || 'Unknown')}</li>
+              <li><strong>Browser:</strong> ${escapeHtml(req.get('User-Agent') || 'Unknown')}</li>
+              <li><strong>Photo:</strong> taken at the check (see the check in the admin or police portal)</li>
+              <li><strong>Checker:</strong> ${checker ? escapeHtml(`${getDisplayName(checker)} (${checker.email || checker.phone || checker.id})`) : 'Anonymous'}</li>
+              <li><strong>Location:</strong> ${checkerLocation?.latitude != null && checkerLocation?.longitude != null ? `${Number(checkerLocation.latitude)}, ${Number(checkerLocation.longitude)} (±${Number(checkerLocation.accuracy) || 'n/a'}m) <a href="https://maps.google.com/?q=${Number(checkerLocation.latitude)},${Number(checkerLocation.longitude)}">map</a>` : 'Unknown'}</li>
               <li><strong>Check ID:</strong> ${checkResult.checkId || 'Unknown'}</li>
             </ul>
             <p>Action may be required. Review related report and consider LEA notification.</p>
@@ -490,6 +302,8 @@ router.post('/enhanced', authenticateToken, async (req, res) => {
     res.json(checkResult);
 
   } catch (error) {
+    // A price the admin hasn't set yet: say so instead of charging anything
+    if (error.priceNotSet) return res.status(503).json({ error: error.message });
     console.error('Enhanced device check error:', error);
     try { require('../services/ErrorStore').capture(error, req); } catch (_) { /* ignore */ }
     // Bad input (missing location etc.) is the checker's to fix, so say what it is
@@ -576,7 +390,7 @@ router.get('/history', authenticateToken, async (req, res) => {
       );
     }
 
-    res.json({ success: true, data: { checks, legacy_checks: legacyChecks } });
+    res.json({ success: true, data: { checks: checks.map((c) => CheckCapture.forViewer(c, req.user)), legacy_checks: STAFF.includes(req.user.role) ? legacyChecks : [] } });
   } catch (error) {
     console.error('Device check history error:', error);
     res.status(500).json({ error: 'Failed to load device check history' });
@@ -609,7 +423,7 @@ router.get('/report/:id', authenticateToken, async (req, res) => {
       );
     }
 
-    res.json({ success: true, data: { check, device, checker } });
+    res.json({ success: true, data: { check: CheckCapture.forViewer(check, req.user), device, checker } });
   } catch (error) {
     console.error('Device check report error:', error);
     res.status(500).json({ error: 'Failed to load check report' });

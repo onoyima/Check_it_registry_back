@@ -22,7 +22,7 @@ class CustodyService {
     return Database.selectOne('device_custody', '*', `device_id = ? AND status IN ('held','found','release_paid') ORDER BY created_at DESC LIMIT 1`, [deviceId]);
   }
 
-  static async fee() { return Number(await RevenueService.getFee('device_release_fee')) || 0; }
+  static async fee() { return RevenueService.getFee('device_release_fee'); }
 
   // Called when a stolen/lost report is filed
   static async hold(deviceId, reportId, ownerId) {
@@ -117,7 +117,7 @@ class CustodyService {
       const d = await Database.selectOne('devices', 'brand, model', 'id = ?', [c.device_id]);
       if (!owner?.email) return;
       const item = [d?.brand, d?.model].filter(Boolean).join(' ') || 'your item';
-      const fee = await this.fee();
+      const fee = await this.fee().catch(() => null);
       const EmailTemplate = require('./EmailTemplate');
       const NotificationService = require('./NotificationService');
       const link = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/device/${c.device_id}`;

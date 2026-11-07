@@ -143,9 +143,43 @@ describe('Monnify connection (requests it sends)', () => {
       if (url.endsWith('/api/v1/refunds/initiate-refund')) return { data: { requestSuccessful: true, responseBody: { refundStatus: 'IN_PROGRESS' } } };
       throw new Error('unexpected ' + url);
     };
-    axios.get = async (url, cfg) => { calls.push({ m: 'GET', url, params: cfg?.params }); return { data: { requestSuccessful: true, responseBody: { paymentStatus: 'PAID', amountPaid: '5000.00', currencyCode: 'NGN', transactionReference: 'MNFY|1' } } }; };
+    axios.get = async (url, cfg) => {
+      calls.push({ m: 'GET', url, params: cfg?.params });
+      if (url.endsWith('/api/v1/banks')) return { data: { requestSuccessful: true, responseBody: [{ name: 'Moniepoint MFB', code: '50515' }, { name: 'GTBank', code: '058' }] } };
+      if (url.includes('/disbursements/account/validate')) {
+        if (cfg?.params?.accountNumber === '0000000000') return { data: { requestSuccessful: false, responseMessage: 'Invalid account' } };
+        return { data: { requestSuccessful: true, responseBody: { accountNumber: cfg.params.accountNumber, accountName: 'CHIDI TESTER', bankCode: cfg.params.bankCode } } };
+      }
+      return { data: { requestSuccessful: true, responseBody: { paymentStatus: 'PAID', amountPaid: '5000.00', currencyCode: 'NGN', transactionReference: 'MNFY|1' } } };
+    };
   });
   afterAll(() => { axios.post = saved.post; axios.get = saved.get; });
+
+  test("sellers' bank accounts are listed and checked through the provider that's switched on", async () => {
+    await Database.query("UPDATE system_settings SET setting_value = 'monnify' WHERE setting_key = 'marketplace_escrow_provider'");
+    try {
+      const banks = expectStatus(await api().get('/api/payments/banks').set(auth('business')), 200);
+      expect(banks.body.provider).toBe('monnify');
+      expect(banks.body.data).toEqual(expect.arrayContaining([{ name: 'Moniepoint MFB', code: '50515' }]));
+      const name = expectStatus(await api().post('/api/payments/resolve-account').set(auth('business')).send({ accountNumber: '5012345678', bankCode: '50515' }), 200);
+      expect(name.body).toMatchObject({ accountName: 'CHIDI TESTER', provider: 'monnify' });
+      expectStatus(await api().post('/api/payments/resolve-account').set(auth('business')).send({ accountNumber: '0000000000', bankCode: '50515' }), 400);
+      // the name the browser sends is ignored; the provider's is saved
+      const saved = expectStatus(await api().post('/api/payments/seller-bank-account').set(auth('business'))
+        .send({ bankCode: '50515', bankName: 'Moniepoint MFB', accountNumber: '5012345678', accountName: 'Somebody Else' }), 200);
+      expect(saved.body.accountName).toBe('CHIDI TESTER');
+      const [row] = await Database.query('SELECT account_name, provider, recipient_code FROM seller_bank_accounts WHERE user_id = ?', [state().users.business.id]);
+      expect(row).toMatchObject({ account_name: 'CHIDI TESTER', provider: 'monnify', recipient_code: null });
+      let mine = expectStatus(await api().get('/api/payments/seller-bank-account').set(auth('business')), 200);
+      expect(mine.body.data.needsUpdate).toBe(false);
+      // switch to another provider: the seller is asked to choose their bank again
+      await Database.query("UPDATE system_settings SET setting_value = 'paystack' WHERE setting_key = 'marketplace_escrow_provider'");
+      mine = expectStatus(await api().get('/api/payments/seller-bank-account').set(auth('business')), 200);
+      expect(mine.body.data.needsUpdate).toBe(true);
+    } finally {
+      await Database.query("UPDATE system_settings SET setting_value = 'paystack' WHERE setting_key = 'marketplace_escrow_provider'");
+    }
+  });
 
   test('signs in with the API key, starts, checks, pays out and refunds', async () => {
     const m = require('../../services/escrow').get('monnify');
@@ -159,9 +193,9 @@ describe('Monnify connection (requests it sends)', () => {
 
     const v = await m.verifyPayment('PUR-1');
     expect(v).toMatchObject({ paid: true, amount: 5000 });
-    expect(calls.find((c) => c.m === 'GET').params).toEqual({ paymentReference: 'PUR-1' });
+    expect(calls.find((c) => c.m === 'GET' && c.url.includes('/transactions/query')).params).toEqual({ paymentReference: 'PUR-1' });
 
-    await Database.query("INSERT INTO seller_bank_accounts (id, user_id, bank_name, bank_code, account_number, account_name, is_verified) VALUES (UUID(), ?, 'GTBank', '058', '0123456789', 'Seller', 1)", [state().users.user.id]);
+    await Database.query("INSERT INTO seller_bank_accounts (id, user_id, bank_name, bank_code, account_number, account_name, is_verified, provider) VALUES (UUID(), ?, 'GTBank', '058', '0123456789', 'Seller', 1, 'monnify')", [state().users.user.id]);
     const out = await m.release({ sellerId: state().users.user.id, amount: 4750, reference: 'PAYOUT-1' });
     expect(out.success).toBe(true);
     expect(calls.find((c) => c.url.endsWith('/disbursements/single')).body).toMatchObject({ amount: 4750, destinationBankCode: '058', destinationAccountNumber: '0123456789', sourceAccountNumber: '8000000001' });

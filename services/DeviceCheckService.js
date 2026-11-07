@@ -19,7 +19,8 @@ class DeviceCheckService {
         deviceFingerprint,
         networkInfo,
         checkReason,
-        checkerUserId
+        checkerUserId,
+        capture = {}
       } = checkData;
 
       // Validate required data
@@ -38,7 +39,8 @@ class DeviceCheckService {
           networkInfo,
           checkReason,
           securityAnalysis: { riskScore: 0, riskFactors: [] },
-          warnings: { ownership: null, security: [] }
+          warnings: { ownership: null, security: [] },
+          capture
         });
         return {
           success: false,
@@ -114,7 +116,8 @@ class DeviceCheckService {
         checkReason,
         securityAnalysis,
         warnings,
-        effectiveStatus
+        effectiveStatus,
+        capture
       });
 
       // Update device check statistics
@@ -485,7 +488,8 @@ class DeviceCheckService {
         checkReason,
         securityAnalysis,
         warnings,
-        effectiveStatus
+        effectiveStatus,
+        capture = {}
       } = logData;
 
       const checkLogId = Database.generateUUID();
@@ -501,10 +505,8 @@ class DeviceCheckService {
         checkResultEnum = 'stolen'; // treat lost as reported device for alerts
       } else if ((securityAnalysis?.riskScore || 0) > 70) {
         checkResultEnum = 'suspicious';
-      } else if (device.status === 'verified') {
-        checkResultEnum = 'legitimate';
       } else {
-        checkResultEnum = 'unknown';
+        checkResultEnum = 'legitimate'; // registered, no theft or loss report
       }
 
       const isSuspicious = (securityAnalysis?.riskScore || 0) > 70;
@@ -514,15 +516,24 @@ class DeviceCheckService {
         id: checkLogId,
         device_id: device ? device.id : null,
         checker_user_id: checkerUserId || null,
-        check_type: 'public_check',
-        latitude: checkerLocation?.latitude || null,
-        longitude: checkerLocation?.longitude || null,
-        location_accuracy: checkerLocation?.accuracy || null,
-        ip_address: networkInfo?.ipAddress || null,
-        mac_address: (deviceFingerprint?.macAddress || networkInfo?.macAddress || networkInfo?.mac || null),
+        check_type: capture.isOwnItem ? 'ownership_verification' : 'public_check',
+        searched_identifier: capture.searchedIdentifier || (deviceIdentifier ? String(deviceIdentifier).slice(0, 64) : null),
+        is_own_item: capture.isOwnItem ? 1 : 0,
+        latitude: checkerLocation?.latitude ?? null,
+        longitude: checkerLocation?.longitude ?? null,
+        location_accuracy: checkerLocation?.accuracy ?? null,
+        // The address our server saw; the browser's own claim is kept apart
+        ip_address: capture.serverIp || null,
+        reported_ip: capture.reportedIp || null,
+        // Browsers don't reveal MAC addresses, so none is stored
+        mac_address: null,
+        browser_device_id: capture.browserDeviceId || null,
+        selfie_url: capture.selfieUrl || null,
+        fee_paid: capture.feePaid ?? null,
+        is_paid: capture.feePaid ? 1 : 0,
         user_agent: deviceFingerprint?.userAgent || null,
         browser_fingerprint: null,
-        device_fingerprint: JSON.stringify(deviceFingerprint || {}),
+        device_fingerprint: JSON.stringify({ ...(deviceFingerprint || {}), macAddress: undefined }),
         risk_score: securityAnalysis?.riskScore || 0,
         suspicious_flags: JSON.stringify(securityAnalysis?.riskFactors || []),
         check_result: checkResultEnum,
@@ -532,9 +543,9 @@ class DeviceCheckService {
 
       return checkLogId;
     } catch (error) {
-      // Never fail the person's check because the log could not be written
+      // A check is only answered once it is recorded (who, where, photo)
       console.error('Check logging error:', error);
-      return null;
+      throw error;
     }
   }
 

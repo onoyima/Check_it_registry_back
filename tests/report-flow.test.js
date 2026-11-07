@@ -32,6 +32,19 @@ jest.mock('../services/SecurityService', () => ({
 jest.mock('../services/FraudDetectionService', () => ({
   checkAndFlag: jest.fn(() => ({ blocked: false })),
 }));
+jest.mock('../services/IdentityService', () => {
+  class IdentityError extends Error {
+    constructor(message, status) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return {
+    confirmNin: jest.fn().mockResolvedValue({ verified: true }),
+    confirmBusiness: jest.fn().mockResolvedValue({ verified: true }),
+    IdentityError,
+  };
+});
 jest.mock('../utils/user-helpers', () => ({
   getDisplayName: jest.fn(user => {
     if (!user) return '';
@@ -62,9 +75,9 @@ describe('RevenueService.shouldChargeForUserReport', () => {
     jest.clearAllMocks();
   });
 
-  it('Report #1: first report requires payment of 300', async () => {
+  it('Report #1: first report requires the configured fee', async () => {
     Database.query.mockResolvedValueOnce([{ count: 0 }]);
-    Database.selectOne.mockResolvedValueOnce({ setting_value: '2' });
+    Database.selectOne.mockResolvedValueOnce({ setting_value: '300' });
 
     const result = await RevenueService.shouldChargeForUserReport('user-123');
 
@@ -73,39 +86,42 @@ describe('RevenueService.shouldChargeForUserReport', () => {
     expect(result.amount).toBe(300);
   });
 
-  it('Report #2: within free allowance, no payment required', async () => {
+  it('Report #2: every report requires payment', async () => {
     Database.query.mockResolvedValueOnce([{ count: 1 }]);
-    Database.selectOne.mockResolvedValueOnce({ setting_value: '2' });
+    Database.selectOne.mockResolvedValueOnce({ setting_value: '300' });
 
     const result = await RevenueService.shouldChargeForUserReport('user-123');
 
-    expect(result.requiresPayment).toBe(false);
+    expect(result.requiresPayment).toBe(true);
     expect(result.reportNumber).toBe(2);
+    expect(result.amount).toBe(300);
   });
 
-  it('Report #3: still within free allowance', async () => {
+  it('Report #3: every report requires payment', async () => {
     Database.query.mockResolvedValueOnce([{ count: 2 }]);
-    Database.selectOne.mockResolvedValueOnce({ setting_value: '2' });
+    Database.selectOne.mockResolvedValueOnce({ setting_value: '300' });
 
     const result = await RevenueService.shouldChargeForUserReport('user-123');
 
-    expect(result.requiresPayment).toBe(false);
+    expect(result.requiresPayment).toBe(true);
     expect(result.reportNumber).toBe(3);
+    expect(result.amount).toBe(300);
   });
 
-  it('Report #4+: exceeds free allowance, requires payment', async () => {
+  it('Report #4+: requires payment', async () => {
     Database.query.mockResolvedValueOnce([{ count: 3 }]);
-    Database.selectOne.mockResolvedValueOnce({ setting_value: '2' });
+    Database.selectOne.mockResolvedValueOnce({ setting_value: '300' });
 
     const result = await RevenueService.shouldChargeForUserReport('user-123');
 
     expect(result.requiresPayment).toBe(true);
     expect(result.reportNumber).toBe(4);
+    expect(result.amount).toBe(300);
   });
 
   it('Report #10+: still uses standard report_verification_fee', async () => {
     Database.query.mockResolvedValueOnce([{ count: 9 }]);
-    Database.selectOne.mockResolvedValueOnce({ setting_value: '2' });
+    Database.selectOne.mockResolvedValueOnce({ setting_value: '300' });
 
     const result = await RevenueService.shouldChargeForUserReport('user-123');
 
@@ -114,13 +130,23 @@ describe('RevenueService.shouldChargeForUserReport', () => {
     expect(result.amount).toBe(300);
   });
 
-  it('Per-user count: count is per user, not per device', async () => {
+  it('Report number is per user, not per device', async () => {
     Database.query.mockResolvedValueOnce([{ count: 3 }]);
-    Database.selectOne.mockResolvedValueOnce({ setting_value: '2' });
+    Database.selectOne.mockResolvedValueOnce({ setting_value: '300' });
 
     const result = await RevenueService.shouldChargeForUserReport('user-123');
 
     expect(result.reportNumber).toBe(4);
+  });
+
+  it('A fee of 0 switches the payment step off', async () => {
+    Database.query.mockResolvedValueOnce([{ count: 0 }]);
+    Database.selectOne.mockResolvedValueOnce({ setting_value: '0' });
+
+    const result = await RevenueService.shouldChargeForUserReport('user-123');
+
+    expect(result.requiresPayment).toBe(false);
+    expect(result.amount).toBe(0);
   });
 });
 
@@ -437,11 +463,11 @@ describe('Report Management Routes', () => {
     expect(res.body.requiresPayment).toBe(true);
   });
 
-  it('POST /: returns requiresNin when no NIN and not KYC verified', async () => {
+  it('POST /: returns requiresNin when no NIN is supplied', async () => {
     Database.selectOne.mockImplementation((table, cols, where) => {
       if (table === 'devices') return Promise.resolve({ id: 'dev-1', user_id: 'user-123', status: 'verified', brand: 'X', model: 'Y', imei: '123', serial: '456', color: 'black' });
       if (table === 'reports') return Promise.resolve(null);
-      if (table === 'system_settings') return Promise.resolve({ setting_value: '2' });
+      if (table === 'system_settings') return Promise.resolve({ setting_value: '0' });
       if (table === 'users') return Promise.resolve({ kyc_status: 'unverified', is_verified: false, region: 'default', name: 'Test User', first_name: 'Test', middle_name: null, last_name: 'User', email: 'test@example.com', phone: null });
       if (table === 'law_enforcement_agencies') return Promise.resolve(null);
       return Promise.resolve(null);
@@ -456,11 +482,11 @@ describe('Report Management Routes', () => {
     expect(res.body.requiresNin).toBe(true);
   });
 
-  it('POST /: creates report successfully for free report (201)', async () => {
+  it('POST /: creates report successfully when the report fee is zero (201)', async () => {
     Database.selectOne.mockImplementation((table, cols, where) => {
       if (table === 'devices') return Promise.resolve({ id: 'dev-1', user_id: 'user-123', status: 'verified', brand: 'iPhone', model: '14', imei: '123', serial: '456', color: 'black' });
       if (table === 'reports') return Promise.resolve(null);
-      if (table === 'system_settings') return Promise.resolve({ setting_value: '2' });
+      if (table === 'system_settings') return Promise.resolve({ setting_value: '0' });
       if (table === 'users') return Promise.resolve({ kyc_status: 'verified', is_verified: true, region: 'default', name: 'Test User', first_name: 'Test', middle_name: null, last_name: 'User', email: 'test@example.com', phone: '123456' });
       if (table === 'law_enforcement_agencies') return Promise.resolve({ id: 'lea-1', agency_name: 'Police', contact_email: 'lea@test.com' });
       return Promise.resolve(null);
@@ -469,7 +495,7 @@ describe('Report Management Routes', () => {
 
     const res = await request(app)
       .post('/api/reports')
-      .send({ device_id: 'dev-1', report_type: 'stolen', description: 'test', occurred_at: '2026-01-01' });
+      .send({ device_id: 'dev-1', report_type: 'stolen', description: 'test', occurred_at: '2026-01-01', nin: '12345678901' });
 
     expect(res.status).toBe(201);
     expect(Database.transaction).toHaveBeenCalled();
