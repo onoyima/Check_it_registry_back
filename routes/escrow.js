@@ -85,8 +85,7 @@ router.put('/admin/settings', authenticateToken, requireAdmin, async (req, res) 
     const result = await EscrowService.updatePlatformFeePercent(req.user.id, platform_fee_percent);
     res.json(result);
   } catch (error) {
-    console.error('Update fee settings error:', error);
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 });
 

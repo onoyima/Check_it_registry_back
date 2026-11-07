@@ -2,9 +2,9 @@ const Database = require('../config');
 const PaymentService = require('./PaymentService');
 
 class EscrowService {
+  // The one marketplace commission, set by the admin on the Prices page
   static async getPlatformFeePercent() {
-    const row = await Database.selectOne('system_settings', 'setting_value', "setting_key = 'platform_fee_percent'");
-    return parseFloat(row?.setting_value || '2.50');
+    return require('./RevenueService').getFee('marketplace_commission_percent');
   }
 
   static async holdFunds({ transactionId, listingId, buyerId, sellerId, amount, currency, provider, paymentReference, providerReference }) {
@@ -117,7 +117,7 @@ class EscrowService {
         user_id: escrow.seller_id,
         amount: escrow.platform_fee_amount,
         currency: 'NGN',
-        type: 'service_fee',
+        type: 'marketplace_commission',
         status: 'completed',
         related_entity_type: 'marketplace_listing',
         related_entity_id: escrow.listing_id,
@@ -364,23 +364,16 @@ class EscrowService {
   }
 
   static async updatePlatformFeePercent(adminId, percent) {
-    const val = parseFloat(percent);
-    if (isNaN(val) || val < 0 || val > 100) throw new Error('Fee percent must be between 0 and 100');
-    const formatted = val.toFixed(2);
-
-    await Database.query(
-      "UPDATE system_settings SET setting_value = ?, updated_by = ?, updated_at = NOW() WHERE setting_key = 'platform_fee_percent'",
-      [formatted, adminId]
-    );
-
-    return { platform_fee_percent: formatted };
+    const { value } = await require('./RevenueService').setFee('marketplace_commission_percent', percent, adminId);
+    return { platform_fee_percent: value };
   }
 
   static async getPlatformFeeSettings() {
     const row = await Database.selectOne('system_settings', 'setting_value, updated_by, updated_at',
-      "setting_key = 'platform_fee_percent'");
+      "setting_key = 'marketplace_commission_percent'");
+    const n = row && String(row.setting_value ?? '').trim() !== '' ? Number(row.setting_value) : NaN;
     return {
-      platform_fee_percent: parseFloat(row?.setting_value || '2.50'),
+      platform_fee_percent: Number.isFinite(n) ? n : null,
       updated_by: row?.updated_by || null,
       updated_at: row?.updated_at || null,
     };

@@ -148,7 +148,7 @@ router.post('/onboard', requireRole(['business', 'admin']), async (req, res) => 
     });
   } catch (error) {
     console.error('[Onboarding] Error:', error);
-    res.status(500).json({ error: error.message || 'Failed to onboard customer' });
+    res.status(error.status || 500).json({ error: error.status ? error.message : (error.message || "Failed to onboard customer") });
   }
 });
 

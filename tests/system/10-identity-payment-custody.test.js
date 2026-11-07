@@ -2,7 +2,7 @@
 // NIN; Prembly is used once per number. Reported items are held by
 // ProveOwnership until the owner pays the release fee. Businesses verify
 // with their CAC number the same way.
-const { api, Database, createAccount, expectStatus, makeImei, makeSerial, payInvoice } = require('./helpers');
+const { api, Database, createAccount, expectStatus, makeImei, makeSerial, payInvoice, selfie } = require('./helpers');
 const PaystackService = require('../../services/PaystackService');
 const IdentityService = require('../../services/IdentityService');
 const prembly = require('./prembly-fake');
@@ -13,6 +13,17 @@ beforeAll(() => {
 });
 
 const as = (acct) => ({ Authorization: `Bearer ${acct.token}` });
+// The NIN check that runs inside each report (there is no separate
+// "confirm your identity" endpoint any more)
+async function confirmNin(acct, nin) {
+  try {
+    await IdentityService.confirmNin(acct.id, nin, 'report');
+    return { status: 200, body: { success: true } };
+  } catch (e) {
+    if (e instanceof IdentityService.IdentityError) return { status: e.status || 400, body: { success: false, error: e.message } };
+    throw e;
+  }
+}
 async function item(acct) {
   const r = await api().post('/api/device-management').set(as(acct)).send({ category: 'smartphone', brand: 'Samsung', model: 'A35', imei: makeImei() });
   expect(r.status).toBe(201);
@@ -27,6 +38,17 @@ async function paid(acct, fee = 'report_verification_fee') {
 }
 const report = (acct, device, extra = {}) => api().post('/api/report-management').set(as(acct)).send({
   device_id: device.id, report_type: 'stolen', description: 'Taken from my bag in a danfo', occurred_at: new Date().toISOString(), location: 'Yaba, Lagos', ...extra,
+});
+
+describe('there is no separate identity step', () => {
+  test('the free "confirm your identity" endpoints are closed; the NIN is given when reporting', async () => {
+    const ada = await createAccount('user');
+    const nin = prembly.addPerson('Ada', 'Tester');
+    expectStatus(await api().post('/api/security/nin/verify').set(as(ada)).send({ nin }), 404);
+    expectStatus(await api().post('/api/kyc/verify').set(as(ada)).send({ nin }), 410);
+    expectStatus(await api().post('/api/kyc/lookup').set(as(ada)).send({ nin }), 410);
+    expect(prembly.callsFor(nin)).toBe(0);
+  });
 });
 
 describe('every report: pay, then confirm identity', () => {
@@ -63,7 +85,7 @@ describe('every report: pay, then confirm identity', () => {
   test('a wrong NIN on a later report fails, and the payment is kept for the retry', async () => {
     const ada = await createAccount('user');
     const nin = prembly.addPerson('Ada', 'Tester');
-    expectStatus(await api().post('/api/security/nin/verify').set(as(ada)).send({ nin }), 200);
+    expectStatus(await confirmNin(ada, nin), 200);
     const phone = await item(ada);
     const ref = await paid(ada);
     const wrong = await report(ada, phone, { pay_by_pass: ref, nin: '12345678901' });
@@ -77,9 +99,9 @@ describe('every report: pay, then confirm identity', () => {
   test('names that don\'t match fail, the NIN is not looked up twice, and the wording never changes', async () => {
     const ada = await createAccount('user');
     const nin = prembly.addPerson('Grace', 'Okon'); // someone else's NIN
-    const first = await api().post('/api/security/nin/verify').set(as(ada)).send({ nin });
+    const first = await confirmNin(ada, nin);
     expect(first.status).toBe(400);
-    const second = await api().post('/api/security/nin/verify').set(as(ada)).send({ nin });
+    const second = await confirmNin(ada, nin);
     expect(prembly.callsFor(nin)).toBe(1);
     expect(second.body.error).toBe(first.body.error);
     expect(first.body.error).toBe(IdentityService.MESSAGES.mismatch);
@@ -89,9 +111,9 @@ describe('every report: pay, then confirm identity', () => {
   test('a NIN confirmed for one account cannot be used by another', async () => {
     const ada = await createAccount('user');
     const nin = prembly.addPerson('Ada', 'Tester');
-    expectStatus(await api().post('/api/security/nin/verify').set(as(ada)).send({ nin }), 200);
+    expectStatus(await confirmNin(ada, nin), 200);
     const other = await createAccount('user'); // also called Ada Tester
-    const r = await api().post('/api/security/nin/verify').set(as(other)).send({ nin });
+    const r = await confirmNin(other, nin);
     expect(r.status).toBe(400);
     expect(r.body.error).toBe(IdentityService.MESSAGES.in_use);
     expect(prembly.callsFor(nin)).toBe(1);
@@ -99,14 +121,14 @@ describe('every report: pay, then confirm identity', () => {
 
   test('after 3 failed tries in a day, it pauses', async () => {
     const ada = await createAccount('user');
-    for (let i = 0; i < 3; i++) await api().post('/api/security/nin/verify').set(as(ada)).send({ nin: prembly.addPerson('Bola', `X${i}`) });
-    const r = await api().post('/api/security/nin/verify').set(as(ada)).send({ nin: prembly.addPerson('Ada', 'Tester') });
+    for (let i = 0; i < 3; i++) await confirmNin(ada, prembly.addPerson('Bola', `X${i}`));
+    const r = await confirmNin(ada, prembly.addPerson('Ada', 'Tester'));
     expect(r.status).toBe(429);
   });
 
   test('once identity is confirmed, the name can\'t be changed', async () => {
     const ada = await createAccount('user');
-    expectStatus(await api().post('/api/security/nin/verify').set(as(ada)).send({ nin: prembly.addPerson('Ada', 'Tester') }), 200);
+    expectStatus(await confirmNin(ada, prembly.addPerson('Ada', 'Tester')), 200);
     expectStatus(await api().put('/api/auth/profile').set(as(ada)).send({ first_name: 'Someone', last_name: 'Else' }), 403);
     // other details still can
     expectStatus(await api().put('/api/auth/profile').set(as(ada)).send({ first_name: 'Ada', last_name: 'Tester', region: 'Lagos' }), 200);
@@ -118,7 +140,7 @@ describe('every report: pay, then confirm identity', () => {
   test('NINs are stored encrypted, never in plain text', async () => {
     const ada = await createAccount('user');
     const nin = prembly.addPerson('Ada', 'Tester');
-    expectStatus(await api().post('/api/security/nin/verify').set(as(ada)).send({ nin }), 200);
+    expectStatus(await confirmNin(ada, nin), 200);
     const rows = await Database.query('SELECT * FROM identity_records WHERE user_id = ?', [ada.id]);
     expect(rows.length).toBe(1);
     expect(JSON.stringify(rows)).not.toContain(nin);
@@ -148,7 +170,7 @@ describe('reported items are held by ProveOwnership', () => {
     const checker = await createAccount('user');
     const chk = await api().post('/api/public-check/enhanced').set(as(checker)).send({
       deviceIdentifier: phone.imei, checkerLocation: { latitude: 6.5, longitude: 3.3, accuracy: 20 },
-      deviceFingerprint: { visitorId: 't' }, networkInfo: { ip: '102.89.1.10', mac: '00:11:22:33:44:55' }, checkReason: 'purchase_check',
+      deviceFingerprint: { visitorId: 't' }, networkInfo: { ip: '102.89.1.10' }, checkReason: 'purchase_check', selfie: await selfie(),
     });
     expect(chk.body.custody?.holder).toBe('ProveOwnership');
 
@@ -253,14 +275,14 @@ describe('business verification', () => {
     expectStatus(await api().post('/api/business-profile/register').set(as(biz)).send({ businessName: 'New Name Ltd', registrationNumber: good }), 403);
   });
 
-  test('the account holder must be a director, or confirm their own NIN first', async () => {
+  test('the account holder must be a director, or give their own NIN with the request', async () => {
     const biz = await businessWithProfile('Lagos Gadgets Limited');
     const rc = prembly.addCompany('Lagos Gadgets Ltd', { directors: [{ name: 'Grace Okon' }] });
     const ref = await paid(biz, 'business_verification_fee');
     const r1 = await api().post('/api/security/cac/verify').set(as(biz)).send({ rcNumber: rc, pay_by_pass: ref });
     expect(r1.body.error).toBe(IdentityService.MESSAGES.not_director);
-    expectStatus(await api().post('/api/security/nin/verify').set(as(biz)).send({ nin: prembly.addPerson('Chidi', 'Tester') }), 200);
-    expectStatus(await api().post('/api/security/cac/verify').set(as(biz)).send({ rcNumber: rc, pay_by_pass: ref }), 200);
+    // the same paid request, with the owner's own NIN added
+    expectStatus(await api().post('/api/security/cac/verify').set(as(biz)).send({ rcNumber: rc, nin: prembly.addPerson('Chidi', 'Tester'), pay_by_pass: ref }), 200);
     expect(prembly.callsFor(rc)).toBe(1);
   });
 

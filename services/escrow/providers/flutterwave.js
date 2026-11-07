@@ -34,9 +34,26 @@ module.exports = {
     return { paid, amount: paid ? Number(d.amount) : 0, currency: d.currency || 'NGN', providerReference: d.id ? String(d.id) : null };
   },
 
+  async listBanks() {
+    const r = await axios.get(`${BASE()}/v3/banks/NG`, { headers: headers(), timeout: 20000 });
+    const list = r.data?.data;
+    if (!Array.isArray(list) || !list.length) throw new Error('Flutterwave returned no banks');
+    return list.map((b) => ({ name: b.name, code: String(b.code) }));
+  },
+
+  async resolveAccount(accountNumber, bankCode) {
+    const r = await axios.post(`${BASE()}/v3/accounts/resolve`, { account_number: accountNumber, account_bank: bankCode },
+      { headers: headers(), timeout: 20000 }).catch((e) => e.response || { data: {} });
+    const name = r.data?.data?.account_name;
+    if (r.data?.status !== 'success' || !name) throw Object.assign(new Error(r.data?.message || 'We could not find that account'), { status: 400 });
+    return { accountName: name };
+  },
+
+  async prepareRecipient() { return {}; },
+
   async release({ sellerId, amount, reference, reason }) {
-    const bank = await Database.selectOne('seller_bank_accounts', '*', 'user_id = ? AND is_verified = 1', [sellerId]);
-    if (!bank) throw new Error('Seller has no verified bank account for payout');
+    const bank = await Database.selectOne('seller_bank_accounts', '*', "user_id = ? AND is_verified = 1 AND provider = 'flutterwave'", [sellerId]);
+    if (!bank) throw new Error('The seller needs to confirm their bank account for payouts');
     const r = await axios.post(`${BASE()}/v3/transfers`, {
       account_bank: bank.bank_code, account_number: bank.account_number, amount: Number(amount),
       narration: reason || 'Prove Ownership payout', currency: 'NGN', reference,

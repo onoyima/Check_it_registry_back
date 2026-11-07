@@ -23,7 +23,7 @@ const MESSAGES = {
   bad_format_cac: 'Enter your business registration number (RC or BN number).',
   mismatch: 'We could not confirm your identity with these details. Check the number and make sure the name on your account is the name on your NIN.',
   business_mismatch: 'We could not confirm this business with these details. Check the registration number and that the business name matches your CAC registration.',
-  not_director: 'Your name is not among the directors of this company. Confirm your own NIN first, then try again.',
+  not_director: "Your name is not among the directors of this company. Enter your own NIN as well, then try again.",
   inactive: 'This company is not listed as active with the CAC.',
   in_use: 'This number cannot be used with this account. If you think this is a mistake, contact support.',
   too_many: 'Too many unsuccessful attempts today. Please try again tomorrow or contact support.',

@@ -20,38 +20,17 @@ router.post('/initiate', authenticateToken, async (req, res) => {
     let amount = 0;
     let description = '';
 
-    switch (purpose) {
-      case 'report_verification':
-        const shouldCharge = await RevenueService.shouldChargeForReport(userId, device_id);
-        if (!shouldCharge) {
-          return res.json({ success: true, requiresPayment: false, message: 'Free report available' });
-        }
-        amount = await RevenueService.getFee('report_verification_fee');
-        description = 'Report Verification Fee';
-        break;
-      case 'device_check':
-        const onFreeTier = await RevenueService.deductFreeCheckCredit(userId);
-        if (onFreeTier) {
-          return res.json({ success: true, requiresPayment: false, message: 'Free device check available' });
-        }
-        amount = await RevenueService.getFee('device_check_fee');
-        description = 'Device Check Fee';
-        break;
-      case 'nin_verification':
-        amount = await RevenueService.getFee('nin_verification_per_device_fee');
-        description = 'NIN Verification Fee';
-        break;
-      case 'recovery_service':
-        amount = await RevenueService.getFee('device_recovery_fee');
-        description = 'Device Recovery Service';
-        break;
-      case 'business_onboarding':
-        amount = await RevenueService.getFee('business_onboarding_fee');
-        description = 'Business Customer Onboarding';
-        break;
-      default:
-        return res.status(400).json({ error: 'Invalid payment purpose' });
-      }
+    // Amounts always come from the admin's price list
+    const PURPOSES = {
+      report_verification: ['report_verification_fee', 'Report fee'],
+      device_check: ['device_check_fee', 'Item check fee'],
+      business_verification: ['business_verification_fee', 'Business verification fee'],
+      device_release: ['device_release_fee', 'Release fee'],
+      business_onboarding: ['business_onboarding_fee', 'Business Customer Onboarding'],
+    };
+    if (!PURPOSES[purpose]) return res.status(400).json({ error: 'Invalid payment purpose' });
+    amount = await RevenueService.getFee(PURPOSES[purpose][0]);
+    description = PURPOSES[purpose][1];
 
     if (amount <= 0) {
       return res.json({ success: true, requiresPayment: false, message: 'No fee required' });
@@ -114,8 +93,8 @@ router.post('/initiate', authenticateToken, async (req, res) => {
       payment: paymentData,
     });
   } catch (error) {
-    console.error('Checkout initiate error:', error);
-    res.status(500).json({ error: 'Failed to initiate checkout' });
+    if (!error.status) console.error('Checkout initiate error:', error);
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Failed to initiate checkout' });
   }
 });
 

@@ -27,7 +27,7 @@ router.get('/mine', async (req, res) => {
   try {
     const items = await Database.query(`SELECT ${COLUMNS} FROM device_custody c JOIN devices d ON d.id = c.device_id LEFT JOIN reports r ON r.id = c.report_id
       WHERE c.owner_id = ? AND c.status IN ('held','found','release_paid') ORDER BY c.created_at DESC`, [req.user.id]);
-    res.json({ items, release_fee: await CustodyService.fee() });
+    res.json({ items, release_fee: await CustodyService.fee().catch(() => null) });
   } catch (e) { send(res, e); }
 });
 
@@ -36,7 +36,7 @@ router.get('/device/:deviceId', async (req, res) => {
     const device = await Database.selectOne('devices', 'id, user_id', 'id = ?', [req.params.deviceId]);
     if (!device || (device.user_id !== req.user.id && !['admin', 'super_admin', 'lea'].includes(req.user.role))) return res.status(404).json({ error: 'Not found' });
     const c = await CustodyService.openFor(device.id);
-    res.json({ custody: c ? { id: c.id, status: c.status, held_since: c.held_since, found_at: c.found_at, release_paid_at: c.release_paid_at } : null, release_fee: await CustodyService.fee() });
+    res.json({ custody: c ? { id: c.id, status: c.status, held_since: c.held_since, found_at: c.found_at, release_paid_at: c.release_paid_at } : null, release_fee: await CustodyService.fee().catch(() => null) });
   } catch (e) { send(res, e); }
 });
 
@@ -56,7 +56,7 @@ router.get('/desk', requireRole(['admin', 'super_admin', 'lea']), async (req, re
     const items = await Database.query(`SELECT ${COLUMNS}, u.name AS owner_name, u.first_name AS owner_first_name, u.last_name AS owner_last_name, u.email AS owner_email, u.phone AS owner_phone
       FROM device_custody c JOIN devices d ON d.id = c.device_id JOIN users u ON u.id = c.owner_id LEFT JOIN reports r ON r.id = c.report_id
       WHERE ${where}${region} ORDER BY FIELD(c.status, 'release_paid', 'found', 'held'), c.updated_at DESC LIMIT 200`, params);
-    res.json({ items, release_fee: await CustodyService.fee() });
+    res.json({ items, release_fee: await CustodyService.fee().catch(() => null) });
   } catch (e) { send(res, e); }
 });
 

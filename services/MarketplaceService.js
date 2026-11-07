@@ -227,6 +227,8 @@ class MarketplaceService {
 
     const PaymentService = require('./PaymentService');
     const Escrow = require('./escrow');
+    // The commission must be set before anyone pays (it's taken at delivery)
+    await require('./RevenueService').getFee('marketplace_commission_percent');
     const provider = await Escrow.current(); // who holds the money until delivery
     const reference = PaystackService.generateReference('PUR');
 
@@ -356,6 +358,7 @@ class MarketplaceService {
     const PaymentService = require('./PaymentService');
     const PaystackService = require('./PaystackService');
     const Escrow = require('./escrow');
+    await require('./RevenueService').getFee('marketplace_commission_percent');
     const provider = await Escrow.current();
     const reference = PaystackService.generateReference('BUL');
 

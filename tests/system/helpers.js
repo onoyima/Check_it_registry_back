@@ -101,4 +101,16 @@ async function payInvoice(reference, amountNaira) {
 }
 const outbox = require('../../utils/test-outbox');
 
-module.exports = { expectStatus, latestOtp, payInvoice, outbox, api, app, Database, state, auth, createAccount, login, registerItem, confirmItem, makeImei, makeSerial, makeVin, uniq, PNG, path };
+// A real JPEG photo (random pixels), as the camera step sends it
+let _selfie = null;
+async function selfie() {
+  if (_selfie) return _selfie;
+  const sharp = require('sharp');
+  const w = 96; const h = 96; const raw = Buffer.alloc(w * h * 3);
+  for (let i = 0; i < raw.length; i++) raw[i] = Math.floor(Math.random() * 256);
+  const jpg = await sharp(raw, { raw: { width: w, height: h, channels: 3 } }).jpeg({ quality: 90 }).toBuffer();
+  _selfie = 'data:image/jpeg;base64,' + jpg.toString('base64');
+  return _selfie;
+}
+
+module.exports = { selfie, expectStatus, latestOtp, payInvoice, outbox, api, app, Database, state, auth, createAccount, login, registerItem, confirmItem, makeImei, makeSerial, makeVin, uniq, PNG, path };

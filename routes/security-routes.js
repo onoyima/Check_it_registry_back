@@ -123,20 +123,9 @@ router.post('/reauthenticate/verify', async (req, res) => {
   }
 });
 
-// Confirm your identity with your NIN (free). Reports also ask for the NIN
-// every time; this page just lets people do it before they ever need to.
-router.post('/nin/verify', async (req, res) => {
-  try {
-    const { nin } = req.body || {};
-    await IdentityService.confirmNin(req.user.id, nin, 'identity_page');
-    await SecurityService.logCriticalAction(req.user.id, 'NIN_VERIFY', { success: true, ipAddress: req.clientIp }).catch(() => {});
-    res.json({ success: true, message: 'Your identity is confirmed.' });
-  } catch (error) {
-    if (error instanceof IdentityService.IdentityError) return res.status(error.status || 400).json({ success: false, error: error.message });
-    console.error('NIN verify error:', error);
-    res.status(500).json({ error: 'Could not confirm your identity. Please try again.' });
-  }
-});
+// There is no separate "confirm your identity" step: a person's NIN is
+// asked for when they report an item (every report, see report-management),
+// and a business owner's NIN can be given during business verification.
 
 // Business verification: pay the business verification fee, then the CAC
 // registration number is checked (with Prembly the first time only). The
@@ -144,13 +133,13 @@ router.post('/nin/verify', async (req, res) => {
 // mistake costs nothing extra.
 router.post('/cac/verify', async (req, res) => {
   try {
-    const { rcNumber, pay_by_pass } = req.body || {};
+    const { rcNumber, pay_by_pass, nin } = req.body || {};
     if (!rcNumber) return res.status(400).json({ error: 'Enter your business registration number (RC or BN number).' });
     const profile = await Database.selectOne('business_profiles', 'id, verification_status', 'user_id = ?', [req.user.id]);
     if (!profile) return res.status(400).json({ error: 'Complete your business profile first.' });
     if (profile.verification_status === 'verified') return res.json({ success: true, status: 'passed', message: 'Your business is already verified.' });
 
-    const fee = Number(await BusinessVerificationService.getVerificationFee()) || 0;
+    const fee = await BusinessVerificationService.getVerificationFee();
     let invoice = null;
     if (fee > 0) {
       if (!pay_by_pass) return res.json({ requiresPayment: true, amount: fee, feeType: 'business_verification_fee', purpose: 'Business verification fee' });
@@ -163,6 +152,8 @@ router.post('/cac/verify', async (req, res) => {
 
     let result;
     try {
+      // The account holder's own NIN, when they aren't listed as a director
+      if (nin) await IdentityService.confirmNin(req.user.id, nin, 'business_verification');
       result = await IdentityService.confirmBusiness(req.user.id, rcNumber, 'business_verification');
     } catch (e) {
       if (!(e instanceof IdentityService.IdentityError)) throw e;
@@ -187,6 +178,7 @@ router.post('/cac/verify', async (req, res) => {
     await Database.logAudit(req.user.id, 'BUSINESS_VERIFIED', 'business_profiles', profile.id).catch(() => {});
     res.json({ success: true, status: 'passed', company: result.company, message: 'Your business is verified.' });
   } catch (error) {
+    if (error.priceNotSet) return res.status(503).json({ error: error.message });
     console.error('CAC verify error:', error);
     res.status(500).json({ error: 'Could not verify the business. Please try again.' });
   }
