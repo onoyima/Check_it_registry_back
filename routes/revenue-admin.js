@@ -9,6 +9,16 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 // Admin check built on the shared middleware (token revocation, suspension)
 const requireAdmin = [authenticateToken, requireRole(['admin', 'super_admin'])];
 
+// Only allow same-origin relative paths (no scheme, no //host) so the post-
+// payment redirect cannot be abused as an open redirect.
+function safeReturnTo(value) {
+  if (typeof value !== 'string') return '';
+  const path = value.trim();
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) return '';
+  if (/[\u0000-\u001f]/.test(path)) return '';
+  return path.slice(0, 500);
+}
+
 // POST /create-invoice - Start paying a fee (used by the PaymentGate).
 // The amount always comes from the fee settings, never from the browser.
 // Returns a Paystack page to pay on; the paid action is unlocked later by
@@ -26,11 +36,16 @@ router.post('/create-invoice', authenticateToken, async (req, res) => {
 
     const reference = PaystackService.generateReference('FEE');
     const description = typeof req.body.description === 'string' ? req.body.description.slice(0, 200) : '';
+    // Where to send the user after paying (stored so the callback can return
+    // them there even if the provider drops query params).
+    const returnTo = safeReturnTo(req.body.return_to);
     const invoiceId = await RevenueService.createPaymentInvoice(
-      req.user.id, amount, feeKey, reference, { fee_type: feeKey, description }
+      req.user.id, amount, feeKey, reference, { fee_type: feeKey, description, return_to: returnTo }
     );
 
     const frontend = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const callbackQuery = new URLSearchParams({ kind: 'fee' });
+    if (returnTo) callbackQuery.set('return_to', returnTo);
     let authorizationUrl = null;
     try {
       const init = await PaystackService.initializeTransaction({
@@ -38,7 +53,7 @@ router.post('/create-invoice', authenticateToken, async (req, res) => {
         amount,
         reference,
         metadata: { invoiceId, fee_type: feeKey, userId: req.user.id },
-        callbackUrl: `${frontend}/payment/callback?kind=fee`,
+        callbackUrl: `${frontend}/payment/callback?${callbackQuery.toString()}`,
       });
       authorizationUrl = init?.data?.authorization_url || null;
     } catch (err) {
@@ -74,7 +89,19 @@ router.post('/invoices/verify', authenticateToken, async (req, res) => {
     const invoice = await Database.selectOne('payment_invoices', '*', 'reference = ? AND user_id = ?', [reference, req.user.id]);
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
     const paid = await RevenueService.confirmInvoicePayment(invoice);
-    res.json({ reference, paid, status: paid ? 'completed' : invoice.status, amount: parseFloat(invoice.amount) });
+    let metadata = {};
+    try {
+      metadata = invoice.metadata
+        ? (typeof invoice.metadata === 'string' ? JSON.parse(invoice.metadata) : invoice.metadata)
+        : {};
+    } catch { metadata = {}; }
+    res.json({
+      reference,
+      paid,
+      status: paid ? 'completed' : invoice.status,
+      amount: parseFloat(invoice.amount),
+      return_to: typeof metadata.return_to === 'string' ? metadata.return_to : '',
+    });
   } catch (error) {
     res.status(500).json({ error: 'Failed to verify payment' });
   }

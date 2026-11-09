@@ -48,7 +48,7 @@ class MonifyService {
       reference,
       contract_code: MONIFY_CONTRACT_CODE,
       currency: 'NGN',
-      callback_url: `${FRONTEND_URL}/payment/callback`,
+      callback_url: `${FRONTEND_URL}/payment/callback?kind=fee`,
       metadata: {
         ...metadata,
         mchRef: reference,

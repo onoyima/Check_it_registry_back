@@ -3,8 +3,17 @@ const router = express.Router();
 const Database = require('../config');
 const RevenueService = require('../services/RevenueService');
 const PaystackService = require('../services/PaystackService');
-const MonifyService = require('../services/MonifyService');
 const { authenticateToken } = require('../middleware/auth');
+
+// Only allow same-origin relative paths so the post-payment redirect cannot be
+// abused as an open redirect.
+function safeReturnTo(value) {
+  if (typeof value !== 'string') return '';
+  const path = value.trim();
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) return '';
+  if (/[\u0000-\u001f]/.test(path)) return '';
+  return path.slice(0, 500);
+}
 
 // POST /api/checkout/initiate - Create a payment checkout session
 router.post('/initiate', authenticateToken, async (req, res) => {
@@ -16,10 +25,6 @@ router.post('/initiate', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Payment purpose is required' });
     }
 
-    // Determine amount based on purpose
-    let amount = 0;
-    let description = '';
-
     // Amounts always come from the admin's price list
     const PURPOSES = {
       report_verification: ['report_verification_fee', 'Report fee'],
@@ -29,55 +34,38 @@ router.post('/initiate', authenticateToken, async (req, res) => {
       business_onboarding: ['business_onboarding_fee', 'Business Customer Onboarding'],
     };
     if (!PURPOSES[purpose]) return res.status(400).json({ error: 'Invalid payment purpose' });
-    amount = await RevenueService.getFee(PURPOSES[purpose][0]);
-    description = PURPOSES[purpose][1];
+    const feeKey = PURPOSES[purpose][0];
+    const amount = await RevenueService.getFee(feeKey);
+    const description = PURPOSES[purpose][1];
 
     if (amount <= 0) {
       return res.json({ success: true, requiresPayment: false, message: 'No fee required' });
     }
 
-    // Paystack is the only working provider. The "Monify" integration pointed
-    // at a non-existent API and is disabled until it is rebuilt on Monnify.
-    const provider = 'paystack';
-
-    // Create invoice
-    const reference = provider === 'monify'
-      ? MonifyService.generateReference('CHK')
-      : PaystackService.generateReference('CHK');
+    // Paystack is the only working provider. Fee references use the same FEE-
+    // prefix as every other fee flow so the callback can recognise them.
+    const reference = PaystackService.generateReference('FEE');
+    const returnTo = safeReturnTo(req.body.return_to);
 
     const invoiceId = await RevenueService.createPaymentInvoice(
-      userId, amount, purpose, reference, { device_id, ...metadata }
+      userId, amount, feeKey, reference, { device_id, ...metadata, return_to: returnTo }
     );
 
-    // Initialize transaction with the active provider
-    let paymentData;
-    if (provider === 'monify') {
-      const result = await MonifyService.initializeTransaction({
-        email: req.user.email,
-        amount,
-        reference,
-        metadata: { invoiceId, purpose, userId, ...metadata },
-        description,
-      });
-      paymentData = {
-        provider: 'monify',
-        checkout_url: result.responseBody?.checkoutUrl || result.responseBody?.redirectUrl,
-        reference,
-      };
-    } else {
-      const result = await PaystackService.initializeTransaction({
-        email: req.user.email,
-        amount,
-        reference,
-        metadata: { invoiceId, purpose, userId, ...metadata },
-        callbackUrl: `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/payment/callback?kind=fee`,
-      });
-      paymentData = {
-        provider: 'paystack',
-        authorization_url: result.data?.authorization_url,
-        reference,
-      };
-    }
+    const frontend = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const callbackQuery = new URLSearchParams({ kind: 'fee' });
+    if (returnTo) callbackQuery.set('return_to', returnTo);
+    const result = await PaystackService.initializeTransaction({
+      email: req.user.email,
+      amount,
+      reference,
+      metadata: { invoiceId, purpose: feeKey, userId, ...metadata },
+      callbackUrl: `${frontend}/payment/callback?${callbackQuery.toString()}`,
+    });
+    const paymentData = {
+      provider: 'paystack',
+      authorization_url: result.data?.authorization_url,
+      reference,
+    };
 
     res.json({
       success: true,
@@ -86,7 +74,7 @@ router.post('/initiate', authenticateToken, async (req, res) => {
         id: invoiceId,
         amount,
         currency: 'NGN',
-        purpose,
+        purpose: feeKey,
         description,
         reference,
       },

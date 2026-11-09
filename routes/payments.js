@@ -33,35 +33,12 @@ router.delete('/methods/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Initiate payment (mobile money, used by mobile checkout)
-router.post('/initiate', authenticateToken, async (req, res) => {
-  try {
-    const { amount, phone, listing_id, type } = req.body;
-
-    if (!amount || !phone) {
-      return res.status(400).json({ error: 'Amount and phone are required' });
-    }
-
-    const reference = 'PAY-' + req.user.id + '-' + Date.now();
-    const transaction = await PaymentService.createTransaction(
-      req.user.id, amount, type || 'marketplace_purchase', null, { reference, listing_id, phone }
-    );
-
-    await Database.update('transactions', {
-      reference,
-      updated_at: new Date()
-    }, 'id = ?', [transaction.id]);
-
-    res.json({
-      success: true,
-      reference,
-      transactionId: transaction.id,
-      message: 'Payment initiated. Check your phone to complete.'
-    });
-  } catch (error) {
-    console.error('Initiate payment error:', error);
-    res.status(400).json({ error: error.message });
-  }
+// Mobile-money checkout was never wired to a provider. Return an honest error
+// instead of creating a transaction that can never be completed.
+router.post('/initiate', authenticateToken, (req, res) => {
+  res.status(501).json({
+    error: 'Mobile-money checkout is not available. Please pay through the Paystack checkout page.'
+  });
 });
 
 // Get payment history (mobile)

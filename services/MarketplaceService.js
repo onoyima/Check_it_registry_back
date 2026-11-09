@@ -243,7 +243,7 @@ class MarketplaceService {
     const pay = await provider.initializePayment({
       reference, amount: listing.price, email: buyer.email, name: buyer.name,
       description: `Prove Ownership: ${listing.title}`,
-      callbackUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/callback?reference=${encodeURIComponent(reference)}&provider=${provider.name}`,
+      callbackUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/callback?kind=marketplace&reference=${encodeURIComponent(reference)}&provider=${provider.name}`,
       metadata: { listing_title: listing.title, transaction_id: buyerTx.id, userId: buyerId, listingId },
     });
 
@@ -375,7 +375,7 @@ class MarketplaceService {
     const pay = await provider.initializePayment({
       reference, amount: totalAmount, email: buyer.email, name: buyer.name,
       description: `Prove Ownership: ${items.length} item(s)`,
-      callbackUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/callback?reference=${encodeURIComponent(reference)}&provider=${provider.name}`,
+      callbackUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment/callback?kind=marketplace&reference=${encodeURIComponent(reference)}&provider=${provider.name}`,
       metadata: { item_count: items.length, transaction_count: listings.length, userId: buyerId },
     });
 
