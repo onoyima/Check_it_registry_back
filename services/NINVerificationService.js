@@ -1,6 +1,7 @@
 const Database = require('../config');
 const axios = require('axios');
 const PIIEncryptionService = require('./PIIEncryptionService');
+const PremblyUtils = require('./PremblyUtils');
 
 class NINVerificationService {
   static encrypt(text) {
@@ -25,37 +26,47 @@ class NINVerificationService {
       throw new Error('Prembly API key not configured (PREMBLY_API_KEY)');
     }
 
-    const response = await axios.post(
-      'https://api.prembly.com/verification/identitypass/nin',
-      { id_number: nin },
-      {
-        headers: {
-          'x-api-key': apiKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      }
-    );
-
-    const body = response.data;
-
-    if (!body.status || body.status_code !== '00') {
-      const detail = body.detail || body.message || 'Verification failed';
-      throw new Error(`Prembly NIN verification failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    let response;
+    try {
+      response = await axios.post(
+        `${PremblyUtils.BASE_URL}/verification/vnin`,
+        { number_nin: nin },
+        {
+          headers: {
+            'x-api-key': apiKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        }
+      );
+    } catch (error) {
+      const detail = PremblyUtils.errorDetail(error.response?.data, error.message);
+      throw new Error(`Prembly NIN verification failed: ${detail}`);
     }
 
-    const data = body.data || body.detail || {};
+    const body = response.data || {};
+
+    if (!PremblyUtils.isSuccess(body)) {
+      throw new Error(`Prembly NIN verification failed: ${PremblyUtils.errorDetail(body, 'Verification failed')}`);
+    }
+
+    PremblyUtils.assertProductionReady(body);
+
+    const data = PremblyUtils.firstRecord(body.data || body.detail);
 
     return {
       provider: 'prembly',
       nin,
-      first_name: data.first_name || data.FirstName || '',
-      last_name: data.last_name || data.LastName || '',
-      middle_name: data.middle_name || data.MiddleName || '',
-      date_of_birth: data.dob || data.date_of_birth || data.DOB || '',
-      gender: data.gender || data.Gender || '',
-      photo_url: data.photo || data.image || data.Photo || null,
-      address: data.address || data.Address || '',
+      first_name: PremblyUtils.pick(data.first_name, data.firstname, data.firstName),
+      last_name: PremblyUtils.pick(data.last_name, data.surname, data.lastName),
+      middle_name: PremblyUtils.pick(data.middle_name, data.middlename, data.middleName),
+      date_of_birth: PremblyUtils.normalizeDate(
+        PremblyUtils.pick(data.dob, data.date_of_birth, data.birthdate, data.dateOfBirth, data.DOB)
+      ),
+      gender: PremblyUtils.pick(data.gender, data.Gender),
+      photo_url: PremblyUtils.pick(data.photo, data.image, data.base64Image, data.Photo) || null,
+      address: PremblyUtils.pick(data.address, data.residence_address, data.residentialAddress, data.Address),
+      sandbox: body.is_sandbox === true,
       verified: true
     };
   }

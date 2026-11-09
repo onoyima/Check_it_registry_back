@@ -112,8 +112,11 @@ class IdentityService {
       data = await this.providerLookup(kind, number, extra);
     } catch (e) {
       console.error(`[Identity] ${kind} lookup failed:`, e.message);
-      // A clear "no such record" answer is saved too, so it isn't paid for twice
-      if (/not found|invalid|no record|does not exist/i.test(e.message)) {
+      // A clear "no such record" answer is saved too, so it isn't paid for twice.
+      // Auth/config failures must not be cached as "not found".
+      const providerSaysMissing = /not found|invalid|no record|does not exist/i.test(e.message)
+        && !/api key|unauthori[sz]ed|inactive org|sandbox/i.test(e.message);
+      if (providerSaysMissing) {
         data = { not_found: true };
       } else {
         throw new IdentityError('unavailable', 503);

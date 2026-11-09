@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const PIIEncryptionService = require('./PIIEncryptionService');
 const NINVerificationService = require('./NINVerificationService');
+const PremblyUtils = require('./PremblyUtils');
 
 class KYCService {
 
@@ -218,32 +219,41 @@ class KYCService {
       ninImageBase64 = Buffer.from(imgResponse.data).toString('base64');
     }
 
-    const response = await axios.post(
-      'https://api.prembly.com/biometrics/face-compare',
-      {
-        image1: selfieBase64,
-        image2: ninImageBase64
-      },
-      {
-        headers: {
-          'x-api-key': apiKey,
-          'Content-Type': 'application/json'
+    let response;
+    try {
+      response = await axios.post(
+        `${PremblyUtils.BASE_URL}/api/v1/verification/api/image_comparison/`,
+        {
+          image_one: ninImageBase64,
+          image_two: selfieBase64
         },
-        timeout: 30000
-      }
-    );
-
-    const body = response.data;
-
-    if (!body.status) {
-      throw new Error(`Prembly face comparison failed: ${body.message || 'Unknown error'}`);
+        {
+          headers: {
+            'x-api-key': apiKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        }
+      );
+    } catch (error) {
+      throw new Error(`Prembly face comparison failed: ${PremblyUtils.errorDetail(error.response?.data, error.message)}`);
     }
 
+    const body = response.data || {};
+
+    if (!PremblyUtils.isSuccess(body)) {
+      throw new Error(`Prembly face comparison failed: ${PremblyUtils.errorDetail(body, 'Unknown error')}`);
+    }
+
+    PremblyUtils.assertProductionReady(body);
+
     const data = body.data || body.detail || {};
-    const score = data.score || data.similarity_score || data.percentage || 0;
+    const rawScore = data.confidence_in_percentage ?? data.confidence ?? body.confidence
+      ?? data.score ?? data.similarity_score ?? data.percentage ?? 0;
+    const score = Number(rawScore);
 
     return {
-      score: typeof score === 'number' ? score : parseFloat(score) || 0,
+      score: Number.isFinite(score) ? score : parseFloat(rawScore) || 0,
       liveness: true,
       method: 'prembly_face_compare'
     };
@@ -256,31 +266,43 @@ class KYCService {
     const selfieBuffer = fs.readFileSync(selfiePath);
     const selfieBase64 = selfieBuffer.toString('base64');
 
-    const response = await axios.post(
-      'https://api.prembly.com/biometrics/face-liveliness',
-      {
-        image: selfieBase64
-      },
-      {
-        headers: {
-          'x-api-key': apiKey,
-          'Content-Type': 'application/json'
+    let response;
+    try {
+      response = await axios.post(
+        `${PremblyUtils.BASE_URL}/api/v1/verification/api/liveliness_check/`,
+        {
+          image: selfieBase64
         },
-        timeout: 30000
-      }
-    );
-
-    const body = response.data;
-
-    if (!body.status) {
-      throw new Error(`Prembly liveness check failed: ${body.message || 'Unknown error'}`);
+        {
+          headers: {
+            'x-api-key': apiKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        }
+      );
+    } catch (error) {
+      throw new Error(`Prembly liveness check failed: ${PremblyUtils.errorDetail(error.response?.data, error.message)}`);
     }
 
+    const body = response.data || {};
+
+    if (!PremblyUtils.isSuccess(body)) {
+      throw new Error(`Prembly liveness check failed: ${PremblyUtils.errorDetail(body, 'Unknown error')}`);
+    }
+
+    PremblyUtils.assertProductionReady(body);
+
     const data = body.data || body.detail || {};
+    const percentage = data.confidence_in_percentage
+      ?? (typeof data.confidence === 'number' && data.confidence <= 1 ? data.confidence * 100 : data.confidence)
+      ?? 0;
+    const score = Number(percentage);
+    const finalScore = Number.isFinite(score) ? score : parseFloat(percentage) || 0;
 
     return {
-      liveness: data.is_live || data.liveness || false,
-      score: data.score || data.confidence || 0,
+      liveness: finalScore >= 90,
+      score: finalScore,
       method: 'prembly_liveness'
     };
   }

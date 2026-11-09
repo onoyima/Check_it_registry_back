@@ -1,5 +1,14 @@
 const Database = require('../config');
 const axios = require('axios');
+const {
+  BASE_URL,
+  pick,
+  isSuccess,
+  firstRecord,
+  normalizeDate,
+  assertProductionReady,
+  errorDetail
+} = require('./PremblyUtils');
 
 class CACVerificationService {
   static async getProvider() {
@@ -100,7 +109,7 @@ class CACVerificationService {
 class PremblyCACProvider {
   constructor() {
     this.name = 'prembly';
-    this.baseURL = 'https://api.prembly.com';
+    this.baseURL = BASE_URL;
     this.apiKey = process.env.PREMBLY_API_KEY || '';
   }
 
@@ -132,21 +141,22 @@ class PremblyCACProvider {
 
     const res = response.data;
 
-    if (!res.status || res.status_code !== '00') {
-      const detail = res.detail || res.message || 'CAC verification failed';
-      throw new Error(`Prembly CAC failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    if (!isSuccess(res)) {
+      throw new Error(`Prembly CAC failed: ${errorDetail(res, 'CAC verification failed')}`);
     }
 
-    const data = res.data || res.detail || {};
+    assertProductionReady(res);
+
+    const data = firstRecord(res.data || res.detail);
 
     return {
       provider: 'prembly',
-      rc_number: rcNumber,
-      company_name: data.company_name || data.CompanyName || data.name || '',
-      registration_date: data.registration_date || data.date_registered || data.DateRegistered || '',
-      status: data.company_status || data.status || data.Status || 'unknown',
-      address: data.registered_address || data.address || data.Address || '',
-      business_type: data.company_type || data.type || companyType || 'RC',
+      rc_number: pick(data.rc_number, rcNumber),
+      company_name: pick(data.company_name, data.companyName, data.name),
+      registration_date: normalizeDate(pick(data.registrationDate, data.registration_date, data.date_registered, data.DateRegistered)),
+      status: pick(data.company_status, data.status, data.Status, 'unknown'),
+      address: pick(data.company_address, data.registered_address, data.address, data.branchAddress, data.Address),
+      business_type: pick(data.entity_type, data.company_type, data.type, companyType, 'RC'),
       directors: this.extractDirectors(data),
       verified: true
     };
@@ -154,20 +164,24 @@ class PremblyCACProvider {
 
   extractDirectors(data) {
     const directors = data.directors || data.Directors || data.company_directors || [];
-    if (Array.isArray(directors)) {
-      return directors.map(d => ({
-        name: d.name || d.director_name || '',
-        role: d.role || d.position || 'Director'
-      }));
-    }
-    return [];
+    if (!Array.isArray(directors)) return [];
+    return directors.map(d => {
+      if (typeof d === 'string') return { name: d, role: 'Director' };
+      const nameParts = [d.firstname, d.surname, d.otherName]
+        .map(part => String(part || '').trim().replace(/\s+/g, ' '))
+        .filter(part => part && part.toUpperCase() !== 'N/A');
+      return {
+        name: d.name || d.director_name || d.full_name || d.fullName || d.corporationName || nameParts.join(' '),
+        role: d.affiliateTypeFk?.name || d.role || d.position || 'Director'
+      };
+    });
   }
 }
 
 class PremblyCACAdvanceProvider {
   constructor() {
     this.name = 'prembly_advance';
-    this.baseURL = 'https://api.prembly.com';
+    this.baseURL = BASE_URL;
     this.apiKey = process.env.PREMBLY_API_KEY || '';
   }
 
@@ -199,21 +213,22 @@ class PremblyCACAdvanceProvider {
 
     const res = response.data;
 
-    if (!res.status || res.status_code !== '00') {
-      const detail = res.detail || res.message || 'CAC advance verification failed';
-      throw new Error(`Prembly CAC Advance failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    if (!isSuccess(res)) {
+      throw new Error(`Prembly CAC Advance failed: ${errorDetail(res, 'CAC advance verification failed')}`);
     }
 
-    const data = res.data || res.detail || {};
+    assertProductionReady(res);
+
+    const data = firstRecord(res.data || res.detail);
 
     return {
       provider: 'prembly_advance',
-      rc_number: rcNumber,
-      company_name: data.company_name || data.CompanyName || data.name || '',
-      registration_date: data.registration_date || data.date_registered || '',
-      status: data.company_status || data.status || 'unknown',
-      address: data.registered_address || data.address || '',
-      business_type: data.company_type || data.type || companyType || 'RC',
+      rc_number: pick(data.rc_number, rcNumber),
+      company_name: pick(data.company_name, data.companyName, data.name),
+      registration_date: normalizeDate(pick(data.registrationDate, data.registration_date, data.date_registered, data.DateRegistered)),
+      status: pick(data.company_status, data.status, data.Status, 'unknown'),
+      address: pick(data.company_address, data.registered_address, data.address, data.branchAddress, data.Address),
+      business_type: pick(data.entity_type, data.company_type, data.type, companyType, 'RC'),
       directors: this.extractDirectors(data),
       verified: true
     };
@@ -221,13 +236,17 @@ class PremblyCACAdvanceProvider {
 
   extractDirectors(data) {
     const directors = data.directors || data.Directors || data.company_directors || [];
-    if (Array.isArray(directors)) {
-      return directors.map(d => ({
-        name: d.name || d.director_name || '',
-        role: d.role || d.position || 'Director'
-      }));
-    }
-    return [];
+    if (!Array.isArray(directors)) return [];
+    return directors.map(d => {
+      if (typeof d === 'string') return { name: d, role: 'Director' };
+      const nameParts = [d.firstname, d.surname, d.otherName]
+        .map(part => String(part || '').trim().replace(/\s+/g, ' '))
+        .filter(part => part && part.toUpperCase() !== 'N/A');
+      return {
+        name: d.name || d.director_name || d.full_name || d.fullName || d.corporationName || nameParts.join(' '),
+        role: d.affiliateTypeFk?.name || d.role || d.position || 'Director'
+      };
+    });
   }
 }
 
